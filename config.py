@@ -80,3 +80,19 @@ RECENCY_WEIGHT = 5
 JOURNAL_BONUS = 30
 GEO_PRIMARY_BONUS = 10       # Papers from primary geography
 GEO_SECONDARY_BONUS = 10     # Extra bonus for secondary geography (e.g., Canada)
+
+# ── LLM SETTINGS ────────────────────────────────────────────────────
+# Provider: "openai", "anthropic", "google", "ollama"
+# Model: None = use provider default (see llm_providers.py for defaults)
+# API key: set via environment variable (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
+#          or pass --api-key to llm_pipeline.py
+LLM_PROVIDER = "openai"
+LLM_MODEL = None                  # None = provider default
+LLM_TEMPERATURE = 0.0             # Deterministic for reproducibility
+LLM_BATCH_SIZE = 10               # Papers per progress update
+LLM_MAX_RETRIES = 3               # Retries on schema validation failure
+LLM_CACHE_DIR = "llm_cache"       # Incremental save directory
+
+# Human-in-the-loop confidence thresholds
+LLM_CONFIDENCE_AUTO = 0.8         # Auto-accept if confidence >= this
+LLM_CONFIDENCE_REVIEW = 0.5       # Flag for human review if between this and AUTO
