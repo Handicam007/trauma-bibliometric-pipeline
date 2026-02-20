@@ -10,7 +10,7 @@ Cache:  llm_cache/screening_progress.json
 
 from __future__ import annotations
 
-import json
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -18,12 +18,17 @@ import pandas as pd
 
 from config import (
     FIELD_NAME, LLM_CONFIDENCE_AUTO, LLM_CONFIDENCE_REVIEW,
+    LLM_BATCH_SIZE,
 )
 from llm_providers import LLMProvider
 from llm_schemas import ScreeningResult
+from llm_utils import (
+    safe_doi_key, load_cache, save_cache, should_report_progress,
+)
 
-CACHE_DIR = Path(__file__).parent / "llm_cache"
-CACHE_FILE = CACHE_DIR / "screening_progress.json"
+logger = logging.getLogger("llm_pipeline.screening")
+
+CACHE_FILE = Path(__file__).parent / "llm_cache" / "screening_progress.json"
 OUTPUT_FILE = Path(__file__).parent / "results_curated" / "llm_screening_results.csv"
 
 # ── System Prompt ─────────────────────────────────────────────────────
@@ -98,22 +103,6 @@ def build_full_system_prompt() -> str:
     return "\n".join(parts)
 
 
-def load_cache() -> dict:
-    """Load screening progress from cache."""
-    if CACHE_FILE.exists():
-        try:
-            return json.loads(CACHE_FILE.read_text())
-        except json.JSONDecodeError:
-            return {}
-    return {}
-
-
-def save_cache(cache: dict):
-    """Save screening progress to cache."""
-    CACHE_DIR.mkdir(exist_ok=True)
-    CACHE_FILE.write_text(json.dumps(cache, indent=2, ensure_ascii=False))
-
-
 def run_screening(
     df: pd.DataFrame,
     llm: LLMProvider,
@@ -135,14 +124,16 @@ def run_screening(
     print(f"{'─' * 70}")
 
     system = build_full_system_prompt()
-    cache = load_cache()
+    cache = load_cache(CACHE_FILE)
 
-    papers = df.copy()
-    if limit:
-        papers = papers.head(limit)
+    # Use view, not copy (memory efficiency)
+    papers = df.head(limit) if limit else df
 
     total = len(papers)
-    already_done = sum(1 for doi in papers["doi"] if str(doi) in cache)
+    already_done = sum(
+        1 for _, row in papers.iterrows()
+        if safe_doi_key(row.get("doi"), row.get("title", "")) in cache
+    )
     print(f"  Total papers: {total:,}")
     print(f"  Already screened (cached): {already_done:,}")
     print(f"  Remaining: {total - already_done:,}")
@@ -151,13 +142,26 @@ def run_screening(
     processed = 0
 
     for i, (idx, row) in enumerate(papers.iterrows()):
-        doi = str(row.get("doi", ""))
         title = str(row.get("title", ""))
         abstract = str(row.get("abstract", ""))
+        cache_key = safe_doi_key(row.get("doi"), title)
 
         # Check cache
-        if doi in cache:
-            results.append({**cache[doi], "doi": doi, "title": title})
+        if cache_key in cache:
+            results.append({**cache[cache_key], "doi": str(row.get("doi", "")), "title": title})
+            continue
+
+        # Skip papers with no title
+        if not title.strip() or title.strip().lower() == "nan":
+            results.append({
+                "doi": str(row.get("doi", "")),
+                "title": title,
+                "relevant": None,
+                "confidence": 0.0,
+                "reason": "No title available",
+                "exclusion_category": None,
+                "needs_review": True,
+            })
             continue
 
         # Query LLM
@@ -165,7 +169,7 @@ def run_screening(
         try:
             result = llm.query(system=system, user=user_prompt, schema=ScreeningResult)
             entry = {
-                "doi": doi,
+                "doi": str(row.get("doi", "")),
                 "title": title,
                 "relevant": result.relevant,
                 "confidence": result.confidence,
@@ -176,7 +180,7 @@ def run_screening(
             results.append(entry)
 
             # Cache (without title to save space)
-            cache[doi] = {
+            cache[cache_key] = {
                 "relevant": result.relevant,
                 "confidence": result.confidence,
                 "reason": result.reason,
@@ -186,9 +190,9 @@ def run_screening(
             processed += 1
 
         except Exception as e:
-            print(f"  ⚠ Error on paper {doi}: {e}")
+            logger.warning(f"Error on paper {cache_key}: {e}")
             results.append({
-                "doi": doi,
+                "doi": str(row.get("doi", "")),
                 "title": title,
                 "relevant": None,
                 "confidence": 0.0,
@@ -198,13 +202,13 @@ def run_screening(
             })
 
         # Progress
-        if (i + 1) % 50 == 0 or (i + 1) == total:
+        if should_report_progress(i, total, LLM_BATCH_SIZE):
             pct = (i + 1) / total * 100
             print(f"  Progress: {i+1:,}/{total:,} ({pct:.1f}%) "
                   f"| Processed this run: {processed:,}")
-            save_cache(cache)
+            save_cache(cache, CACHE_FILE)
 
-    save_cache(cache)
+    save_cache(cache, CACHE_FILE)
 
     # Build results DataFrame
     results_df = pd.DataFrame(results)
@@ -213,14 +217,23 @@ def run_screening(
     OUTPUT_FILE.parent.mkdir(exist_ok=True)
     results_df.to_csv(OUTPUT_FILE, index=False)
 
-    # Summary
-    n_relevant = results_df["relevant"].sum() if "relevant" in results_df else 0
-    n_excluded = (~results_df["relevant"].fillna(False)).sum()
+    # Summary — handle None/NaN correctly
+    if "relevant" in results_df:
+        valid_mask = results_df["relevant"].notna()
+        n_valid = valid_mask.sum()
+        n_relevant = results_df.loc[valid_mask, "relevant"].astype(bool).sum()
+        n_excluded = n_valid - n_relevant
+        n_errors = (~valid_mask).sum()
+    else:
+        n_relevant = n_excluded = n_errors = 0
+
     n_review = results_df["needs_review"].sum() if "needs_review" in results_df else 0
 
     print(f"\n  Results:")
     print(f"    Relevant:     {n_relevant:,}")
     print(f"    Excluded:     {n_excluded:,}")
+    if n_errors > 0:
+        print(f"    Errors:       {n_errors:,}")
     print(f"    Needs review: {n_review:,} (confidence < {LLM_CONFIDENCE_AUTO})")
     print(f"  Saved to: {OUTPUT_FILE}")
 

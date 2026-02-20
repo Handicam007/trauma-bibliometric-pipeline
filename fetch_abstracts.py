@@ -172,20 +172,16 @@ def fetch_abstracts_pubmed_batch(pmids: list[str]) -> dict[str, str]:
         return {}
 
 
-def load_cache() -> dict[str, str]:
-    """Load abstract cache from disk."""
-    if CACHE_FILE.exists():
-        try:
-            return json.loads(CACHE_FILE.read_text())
-        except json.JSONDecodeError:
-            return {}
-    return {}
+def load_abs_cache() -> dict[str, str]:
+    """Load abstract cache from disk (atomic-safe)."""
+    from llm_utils import load_cache as _load
+    return _load(CACHE_FILE)
 
 
-def save_cache(cache: dict[str, str]):
-    """Save abstract cache to disk."""
-    CACHE_DIR.mkdir(exist_ok=True)
-    CACHE_FILE.write_text(json.dumps(cache, indent=2, ensure_ascii=False))
+def save_abs_cache(cache: dict[str, str]):
+    """Save abstract cache to disk (atomic-safe)."""
+    from llm_utils import save_cache as _save
+    _save(cache, CACHE_FILE)
 
 
 def main(input_path: Optional[str] = None, force: bool = False):
@@ -223,7 +219,7 @@ def main(input_path: Optional[str] = None, force: bool = False):
         return
 
     # Load cache
-    cache = load_cache()
+    cache = load_abs_cache()
     print(f"  Cache entries: {len(cache):,}")
 
     # Apply cached abstracts first
@@ -280,11 +276,11 @@ def main(input_path: Optional[str] = None, force: bool = False):
             if (i + 1) % 100 == 0 or (i + 1) == len(scopus_papers):
                 print(f"  Scopus: {i+1:,}/{len(scopus_papers):,} "
                       f"(fetched: {scopus_fetched:,})")
-                save_cache(cache)  # Incremental save
+                save_abs_cache(cache)  # Incremental save
 
             time.sleep(SCOPUS_DELAY)
 
-        save_cache(cache)
+        save_abs_cache(cache)
         print(f"  Scopus total fetched: {scopus_fetched:,}")
     else:
         print("\n  ⚠ No Scopus API key found. Skipping Scopus retrieval.")
@@ -329,7 +325,7 @@ def main(input_path: Optional[str] = None, force: bool = False):
 
             print(f"  PubMed batch: {min(batch_start + PUBMED_BATCH_SIZE, len(all_pmids)):,}/"
                   f"{len(all_pmids):,} (fetched: {pubmed_fetched:,})")
-            save_cache(cache)
+            save_abs_cache(cache)
             time.sleep(PUBMED_DELAY)
 
         print(f"  PubMed total fetched: {pubmed_fetched:,}")
@@ -340,7 +336,7 @@ def main(input_path: Optional[str] = None, force: bool = False):
 
 def _save_and_report(df: pd.DataFrame, csv_path: Path, cache: dict):
     """Save updated CSV and print summary."""
-    save_cache(cache)
+    save_abs_cache(cache)
 
     # Replace empty strings with NaN for clean CSV
     df.loc[df["abstract"].str.len() <= 10, "abstract"] = pd.NA

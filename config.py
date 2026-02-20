@@ -89,7 +89,7 @@ GEO_SECONDARY_BONUS = 10     # Extra bonus for secondary geography (e.g., Canada
 LLM_PROVIDER = "openai"
 LLM_MODEL = None                  # None = provider default
 LLM_TEMPERATURE = 0.0             # Deterministic for reproducibility
-LLM_BATCH_SIZE = 10               # Papers per progress update
+LLM_BATCH_SIZE = 50               # Papers per progress update / cache save interval
 LLM_MAX_RETRIES = 3               # Retries on schema validation failure
 LLM_CACHE_DIR = "llm_cache"       # Incremental save directory
 

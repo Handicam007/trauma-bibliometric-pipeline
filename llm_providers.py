@@ -6,6 +6,9 @@ Supports: OpenAI, Anthropic, Google Gemini, Local (Ollama).
 Each provider call returns a validated Pydantic model. If the LLM
 returns malformed JSON, the provider auto-retries (up to MAX_RETRIES).
 
+Distinguishes rate-limit (429/503) errors from schema errors — rate
+limits get longer exponential backoff with up to 10 retries.
+
 Usage:
     from llm_providers import LLMProvider
     from llm_schemas import ScreeningResult
@@ -18,14 +21,16 @@ Usage:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
-import warnings
 from typing import Optional, Type
 
 from pydantic import BaseModel, ValidationError
 
 from config import LLM_MAX_RETRIES, LLM_TEMPERATURE
+
+logger = logging.getLogger("llm_pipeline.providers")
 
 
 # ── Default models per provider ──────────────────────────────────────
@@ -45,6 +50,16 @@ COST_PER_1M_TOKENS = {
     "ollama": {},  # Free
 }
 
+# ── Rate limit retry config ──────────────────────────────────────────
+MAX_RATE_LIMIT_RETRIES = 10          # More patience for rate limits
+RATE_LIMIT_BASE_WAIT = 5             # Start with 5s for rate limits
+RATE_LIMIT_MAX_WAIT = 120            # Cap at 2 minutes
+
+
+class RateLimitError(Exception):
+    """Raised when a provider returns HTTP 429 or 503."""
+    pass
+
 
 class LLMProvider:
     """Provider-agnostic LLM interface with structured output."""
@@ -62,6 +77,7 @@ class LLMProvider:
         self.temperature = temperature
         self.max_retries = max_retries
         self._client = None
+        self._seed = 42  # For OpenAI reproducibility
 
         # Resolve API key
         if api_key:
@@ -96,7 +112,8 @@ class LLMProvider:
         elif self.provider == "google":
             import google.generativeai as genai
             genai.configure(api_key=self.api_key)
-            self._client = genai.GenerativeModel(self.model)
+            # Client created per-call to support system_instruction
+            self._client = "google_configured"
 
         elif self.provider == "ollama":
             # Ollama uses HTTP API directly
@@ -117,6 +134,9 @@ class LLMProvider:
         """
         Send a prompt to the LLM and parse the response into a Pydantic model.
 
+        Separates rate-limit errors (longer backoff, more retries) from
+        schema validation errors (shorter backoff, fewer retries).
+
         Args:
             system: System prompt (instructions, examples)
             user: User prompt (the paper title + abstract)
@@ -129,8 +149,9 @@ class LLMProvider:
             RuntimeError: After max_retries exhausted
         """
         last_error = None
+        rate_limit_attempts = 0
 
-        for attempt in range(1, self.max_retries + 1):
+        for attempt in range(1, self.max_retries + MAX_RATE_LIMIT_RETRIES + 1):
             try:
                 raw_json = self._call_provider(system, user, schema)
                 # Parse and validate
@@ -144,27 +165,69 @@ class LLMProvider:
                 result = schema.model_validate(data)
                 return result
 
+            except RateLimitError as e:
+                rate_limit_attempts += 1
+                if rate_limit_attempts >= MAX_RATE_LIMIT_RETRIES:
+                    raise RuntimeError(
+                        f"Rate limit exceeded after {rate_limit_attempts} retries. "
+                        f"Last error: {e}"
+                    )
+                wait = min(
+                    RATE_LIMIT_BASE_WAIT * (2 ** (rate_limit_attempts - 1)),
+                    RATE_LIMIT_MAX_WAIT,
+                )
+                logger.warning(
+                    f"Rate limited (attempt {rate_limit_attempts}/{MAX_RATE_LIMIT_RETRIES}). "
+                    f"Waiting {wait}s..."
+                )
+                time.sleep(wait)
+                continue
+
             except (json.JSONDecodeError, ValidationError, KeyError, ValueError) as e:
                 last_error = e
-                if attempt < self.max_retries:
-                    wait = 2 ** attempt
-                    warnings.warn(
-                        f"LLM response failed validation (attempt {attempt}/{self.max_retries}): {e}. "
-                        f"Retrying in {wait}s...",
-                        stacklevel=2,
+                schema_attempt = attempt - rate_limit_attempts
+                if schema_attempt < self.max_retries:
+                    wait = 2 ** schema_attempt
+                    logger.warning(
+                        f"LLM response failed validation (attempt {schema_attempt}/{self.max_retries}): "
+                        f"{e}. Retrying in {wait}s..."
                     )
                     time.sleep(wait)
+                else:
+                    break
 
             except Exception as e:
-                last_error = e
-                if attempt < self.max_retries:
-                    wait = 2 ** attempt
-                    warnings.warn(
-                        f"LLM call failed (attempt {attempt}/{self.max_retries}): {e}. "
-                        f"Retrying in {wait}s...",
-                        stacklevel=2,
+                # Check if it's a rate limit error from the SDK
+                error_str = str(e).lower()
+                status_code = getattr(e, "status_code", None)
+                if status_code in (429, 503) or "rate" in error_str and "limit" in error_str:
+                    rate_limit_attempts += 1
+                    if rate_limit_attempts >= MAX_RATE_LIMIT_RETRIES:
+                        raise RuntimeError(
+                            f"Rate limit exceeded after {rate_limit_attempts} retries."
+                        )
+                    wait = min(
+                        RATE_LIMIT_BASE_WAIT * (2 ** (rate_limit_attempts - 1)),
+                        RATE_LIMIT_MAX_WAIT,
+                    )
+                    logger.warning(
+                        f"Rate limited via SDK (attempt {rate_limit_attempts}). "
+                        f"Waiting {wait}s..."
                     )
                     time.sleep(wait)
+                    continue
+
+                last_error = e
+                schema_attempt = attempt - rate_limit_attempts
+                if schema_attempt < self.max_retries:
+                    wait = 2 ** schema_attempt
+                    logger.warning(
+                        f"LLM call failed (attempt {schema_attempt}/{self.max_retries}): "
+                        f"{e}. Retrying in {wait}s..."
+                    )
+                    time.sleep(wait)
+                else:
+                    break
 
         raise RuntimeError(
             f"LLM query failed after {self.max_retries} attempts. Last error: {last_error}"
@@ -184,7 +247,7 @@ class LLMProvider:
         elif self.provider == "anthropic":
             return self._call_anthropic(client, system, user, schema)
         elif self.provider == "google":
-            return self._call_google(client, system, user, schema)
+            return self._call_google(system, user, schema)
         elif self.provider == "ollama":
             return self._call_ollama(client, system, user, schema)
         else:
@@ -193,28 +256,35 @@ class LLMProvider:
     # ── OpenAI ────────────────────────────────────────────────────────
 
     def _call_openai(self, client, system: str, user: str, schema: Type[BaseModel]) -> dict:
-        """Call OpenAI API with structured output (JSON mode)."""
+        """Call OpenAI API with structured output (JSON mode + seed for reproducibility)."""
         json_schema = schema.model_json_schema()
 
         # Clean schema for OpenAI strict mode (remove unsupported keys)
         clean_schema = self._clean_schema_for_openai(json_schema)
 
-        response = client.chat.completions.create(
-            model=self.model,
-            temperature=self.temperature,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": schema.__name__,
-                    "schema": clean_schema,
-                    "strict": True,
+        try:
+            response = client.chat.completions.create(
+                model=self.model,
+                temperature=self.temperature,
+                seed=self._seed,  # Best-effort reproducibility
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": schema.__name__,
+                        "schema": clean_schema,
+                        "strict": True,
+                    },
                 },
-            },
-        )
+            )
+        except Exception as e:
+            status = getattr(e, "status_code", None)
+            if status in (429, 503):
+                raise RateLimitError(str(e))
+            raise
 
         # Track tokens
         if response.usage:
@@ -228,22 +298,38 @@ class LLMProvider:
     def _clean_schema_for_openai(self, schema: dict) -> dict:
         """
         Clean a JSON schema for OpenAI strict mode.
-        OpenAI requires additionalProperties: false and all properties required.
+
+        OpenAI strict mode requires:
+        - additionalProperties: false on all objects
+        - All properties in required list
+        - $refs resolved inline
+        - No unsupported keywords
+
+        Note: Optional[T] fields work because Pydantic v2 generates
+        anyOf: [{type: T}, {type: null}], and OpenAI strict mode
+        handles this correctly when all properties are required.
         """
         schema = schema.copy()
 
         # Remove $defs if present and inline them
         defs = schema.pop("$defs", {})
 
-        def resolve_refs(obj):
+        def resolve_refs(obj, visited=None):
+            """Resolve $ref references, with cycle detection."""
+            if visited is None:
+                visited = set()
             if isinstance(obj, dict):
                 if "$ref" in obj:
                     ref_name = obj["$ref"].split("/")[-1]
+                    if ref_name in visited:
+                        # Circular reference — return as-is
+                        return {"type": "object"}
                     if ref_name in defs:
-                        return resolve_refs(defs[ref_name].copy())
-                return {k: resolve_refs(v) for k, v in obj.items()}
+                        visited.add(ref_name)
+                        return resolve_refs(defs[ref_name].copy(), visited)
+                return {k: resolve_refs(v, visited) for k, v in obj.items()}
             elif isinstance(obj, list):
-                return [resolve_refs(item) for item in obj]
+                return [resolve_refs(item, visited) for item in obj]
             return obj
 
         schema = resolve_refs(schema)
@@ -266,7 +352,7 @@ class LLMProvider:
     # ── Anthropic ─────────────────────────────────────────────────────
 
     def _call_anthropic(self, client, system: str, user: str, schema: Type[BaseModel]) -> dict:
-        """Call Anthropic API using tool_use for structured output."""
+        """Call Anthropic API using tool_use for structured output with prompt caching."""
         json_schema = schema.model_json_schema()
 
         # Use tool_use to enforce JSON structure
@@ -276,15 +362,25 @@ class LLMProvider:
             "input_schema": json_schema,
         }
 
-        response = client.messages.create(
-            model=self.model,
-            max_tokens=1024,
-            temperature=self.temperature,
-            system=system,
-            messages=[{"role": "user", "content": user}],
-            tools=[tool_def],
-            tool_choice={"type": "tool", "name": "output_result"},
-        )
+        try:
+            response = client.messages.create(
+                model=self.model,
+                max_tokens=2048,  # Increased from 1024 for longer extractions
+                temperature=self.temperature,
+                system=[{
+                    "type": "text",
+                    "text": system,
+                    "cache_control": {"type": "ephemeral"},  # Prompt caching
+                }],
+                messages=[{"role": "user", "content": user}],
+                tools=[tool_def],
+                tool_choice={"type": "tool", "name": "output_result"},
+            )
+        except Exception as e:
+            status = getattr(e, "status_code", None)
+            if status in (429, 503):
+                raise RateLimitError(str(e))
+            raise
 
         # Track tokens
         if response.usage:
@@ -301,37 +397,53 @@ class LLMProvider:
 
     # ── Google Gemini ─────────────────────────────────────────────────
 
-    def _call_google(self, client, system: str, user: str, schema: Type[BaseModel]) -> dict:
-        """Call Google Gemini API with JSON mode."""
+    def _call_google(self, system: str, user: str, schema: Type[BaseModel]) -> dict:
+        """Call Google Gemini API with JSON mode and proper system instruction."""
         import google.generativeai as genai
+
+        # Convert Pydantic schema to JSON schema dict for SDK compatibility
+        json_schema = schema.model_json_schema()
 
         # Gemini uses generation_config for JSON mode
         generation_config = genai.types.GenerationConfig(
             temperature=self.temperature,
             response_mime_type="application/json",
-            response_schema=schema,
+            response_schema=json_schema,  # Use dict, not Pydantic class
         )
 
-        # Combine system + user into a single prompt for Gemini
-        full_prompt = f"{system}\n\n---\n\n{user}"
-
-        response = client.generate_content(
-            full_prompt,
-            generation_config=generation_config,
+        # Create model with system_instruction for proper separation
+        model = genai.GenerativeModel(
+            self.model,
+            system_instruction=system,
         )
+
+        try:
+            response = model.generate_content(
+                user,
+                generation_config=generation_config,
+            )
+        except Exception as e:
+            error_str = str(e).lower()
+            if "429" in error_str or "resource exhausted" in error_str:
+                raise RateLimitError(str(e))
+            raise
 
         self.total_calls += 1
-        # Gemini doesn't expose token counts as easily
+        # Track tokens — handle both SDK attribute names
         if hasattr(response, "usage_metadata"):
-            self.total_input_tokens += getattr(response.usage_metadata, "prompt_token_count", 0)
-            self.total_output_tokens += getattr(response.usage_metadata, "candidates_token_count", 0)
+            meta = response.usage_metadata
+            self.total_input_tokens += getattr(meta, "prompt_token_count", 0)
+            self.total_output_tokens += (
+                getattr(meta, "candidates_token_count", 0)
+                or getattr(meta, "completion_token_count", 0)
+            )
 
         return json.loads(response.text)
 
     # ── Ollama (local) ────────────────────────────────────────────────
 
     def _call_ollama(self, session, system: str, user: str, schema: Type[BaseModel]) -> dict:
-        """Call Ollama local API with JSON format."""
+        """Call Ollama local API with JSON format and token tracking."""
         json_schema = schema.model_json_schema()
 
         response = session.post(
@@ -351,11 +463,18 @@ class LLMProvider:
             timeout=120,
         )
 
+        if response.status_code == 429 or response.status_code == 503:
+            raise RateLimitError(f"Ollama error {response.status_code}: {response.text}")
+
         if response.status_code != 200:
             raise RuntimeError(f"Ollama error {response.status_code}: {response.text}")
 
         result = response.json()
         self.total_calls += 1
+
+        # Track Ollama token usage (available in response)
+        self.total_input_tokens += result.get("prompt_eval_count", 0)
+        self.total_output_tokens += result.get("eval_count", 0)
 
         # Parse the content
         content = result.get("message", {}).get("content", "")

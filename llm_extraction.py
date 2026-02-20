@@ -10,6 +10,7 @@ Uses anti-hallucination "Golden Prompt" with:
 - Common trap warnings
 - Few-shot examples with null values
 - Pydantic schema enforcement
+- Post-processing guards for implausible values
 
 Output: results_curated/llm_extracted_data.csv
 Cache:  llm_cache/extraction_progress.json
@@ -17,19 +18,26 @@ Cache:  llm_cache/extraction_progress.json
 
 from __future__ import annotations
 
-import json
+import logging
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
 
-from config import FIELD_NAME
+from config import FIELD_NAME, LLM_BATCH_SIZE
 from llm_providers import LLMProvider
 from llm_schemas import ExtractionResult
+from llm_utils import (
+    safe_doi_key, load_cache, save_cache, should_report_progress,
+)
 
-CACHE_DIR = Path(__file__).parent / "llm_cache"
-CACHE_FILE = CACHE_DIR / "extraction_progress.json"
+logger = logging.getLogger("llm_pipeline.extraction")
+
+CACHE_FILE = Path(__file__).parent / "llm_cache" / "extraction_progress.json"
 OUTPUT_FILE = Path(__file__).parent / "results_curated" / "llm_extracted_data.csv"
+
+# Maximum plausible sample size — anything above this is likely hallucinated
+MAX_PLAUSIBLE_SAMPLE_SIZE = 5_000_000
 
 # ── Golden Prompt ─────────────────────────────────────────────────────
 
@@ -55,39 +63,39 @@ CRITICAL RULES — READ BEFORE RESPONDING:
    If unclear, use "other"
 7. mortality_reported = true ONLY if the abstract mentions death/mortality/survival as an OUTCOME MEASURE, NOT just as background context or introduction.
 8. population: use "mixed" if both adults and children, "geriatric" if specifically elderly/frail, "military" if combat/tactical.
-9. setting: "multi_center" if ≥2 centers stated, "registry" if using NTDB/TQIP/other registry.
+9. setting: "multi_center" if >=2 centers stated, "registry" if using NTDB/TQIP/other registry.
 
 COMMON TRAPS — DO NOT FALL FOR THESE:
-✗ Abstract says "outcomes of 150 patients" → sample_size = 150 ✓
-✗ Abstract says "30-day mortality was 12%" as an outcome → mortality_reported = true ✓
-✗ Abstract says "mortality rates have increased" in introduction → mortality_reported = false ✓ (background, not outcome)
-✗ Abstract says "we reviewed the literature" → study_design = narrative_review ✓
-✗ Abstract says "data from the NTDB" → setting = registry, study_design = registry_study ✓
-✗ Abstract mentions no patient numbers → sample_size = null ✓ (NOT 0)
-✗ Abstract is a guideline → level_of_evidence = "unclear" ✓ (guidelines themselves don't have LoE)
-✗ Abstract says "n=50 in each group" → sample_size = 100 ✓ (total, not per-group)
+X Abstract says "outcomes of 150 patients" -> sample_size = 150
+X Abstract says "30-day mortality was 12%" as an outcome -> mortality_reported = true
+X Abstract says "mortality rates have increased" in introduction -> mortality_reported = false (background, not outcome)
+X Abstract says "we reviewed the literature" -> study_design = narrative_review
+X Abstract says "data from the NTDB" -> setting = registry, study_design = registry_study
+X Abstract mentions no patient numbers -> sample_size = null (NOT 0)
+X Abstract is a guideline -> level_of_evidence = "unclear" (guidelines themselves don't have LoE)
+X Abstract says "n=50 in each group" -> sample_size = 100 (total, not per-group)
 
 === EXAMPLES ===
 
 EXAMPLE 1 (RCT with clear results):
 TITLE: "Whole blood vs component therapy in pediatric trauma: A randomized trial"
 ABSTRACT: "Background: Current resuscitation protocols vary. Methods: We randomized 142 pediatric trauma patients (age 2-17) at 3 Level I trauma centers to receive either whole blood or standard component therapy. Primary outcome: 24-hour mortality. Results: Mortality was 8.5% vs 14.1% (p=0.04). Conclusion: Whole blood reduces 24-hour mortality in pediatric trauma."
-→ {{"study_design": "RCT", "level_of_evidence": "I", "sample_size": 142, "population": "pediatric", "setting": "level_1_trauma_center", "intervention_type": "resuscitation", "key_finding": "Whole blood reduced 24-hour mortality compared to component therapy in pediatric trauma (8.5% vs 14.1%, p=0.04)", "mortality_reported": true, "confidence": 0.95}}
+-> {{"study_design": "RCT", "level_of_evidence": "I", "sample_size": 142, "population": "pediatric", "setting": "level_1_trauma_center", "intervention_type": "resuscitation", "key_finding": "Whole blood reduced 24-hour mortality compared to component therapy in pediatric trauma (8.5% vs 14.1%, p=0.04)", "mortality_reported": true, "confidence": 0.95}}
 
 EXAMPLE 2 (Review with no numbers):
 TITLE: "Trends in REBOA use: A narrative review"
 ABSTRACT: "Resuscitative endovascular balloon occlusion of the aorta (REBOA) has gained increasing attention as a bridge to definitive hemorrhage control. This review summarizes current evidence and ongoing controversies."
-→ {{"study_design": "narrative_review", "level_of_evidence": "V", "sample_size": null, "population": "unclear", "setting": "unclear", "intervention_type": null, "key_finding": null, "mortality_reported": false, "confidence": 0.90}}
+-> {{"study_design": "narrative_review", "level_of_evidence": "V", "sample_size": null, "population": "unclear", "setting": "unclear", "intervention_type": null, "key_finding": null, "mortality_reported": false, "confidence": 0.90}}
 
 EXAMPLE 3 (Registry/ML study):
 TITLE: "Machine learning prediction of hemorrhagic shock using NTDB data"
 ABSTRACT: "We developed a gradient boosting model using vital signs from 2,847 trauma patients in the National Trauma Data Bank to predict hemorrhagic shock within 1 hour of arrival. AUC was 0.89 on the held-out test set."
-→ {{"study_design": "registry_study", "level_of_evidence": "III", "sample_size": 2847, "population": "adult", "setting": "registry", "intervention_type": "technology", "key_finding": "Gradient boosting model predicted hemorrhagic shock with AUC 0.89 using NTDB vital signs data", "mortality_reported": false, "confidence": 0.92}}
+-> {{"study_design": "registry_study", "level_of_evidence": "III", "sample_size": 2847, "population": "adult", "setting": "registry", "intervention_type": "technology", "key_finding": "Gradient boosting model predicted hemorrhagic shock with AUC 0.89 using NTDB vital signs data", "mortality_reported": false, "confidence": 0.92}}
 
 EXAMPLE 4 (No abstract available):
 TITLE: "Damage control surgery for the acute care surgeon"
 ABSTRACT: "(No abstract available)"
-→ {{"study_design": "other", "level_of_evidence": "unclear", "sample_size": null, "population": "unclear", "setting": "unclear", "intervention_type": null, "key_finding": null, "mortality_reported": false, "confidence": 0.30}}
+-> {{"study_design": "other", "level_of_evidence": "unclear", "sample_size": null, "population": "unclear", "setting": "unclear", "intervention_type": null, "key_finding": null, "mortality_reported": false, "confidence": 0.30}}
 
 === NOW EXTRACT DATA FROM THIS PAPER ===
 
@@ -98,20 +106,6 @@ def build_user_prompt(title: str, abstract: str) -> str:
     """Format a single paper for extraction."""
     abs_text = abstract.strip() if abstract and len(str(abstract)) > 10 else "(No abstract available)"
     return f'TITLE: "{title}"\nABSTRACT: "{abs_text}"'
-
-
-def load_cache() -> dict:
-    if CACHE_FILE.exists():
-        try:
-            return json.loads(CACHE_FILE.read_text())
-        except json.JSONDecodeError:
-            return {}
-    return {}
-
-
-def save_cache(cache: dict):
-    CACHE_DIR.mkdir(exist_ok=True)
-    CACHE_FILE.write_text(json.dumps(cache, indent=2, ensure_ascii=False))
 
 
 def run_extraction(
@@ -134,13 +128,14 @@ def run_extraction(
     print("STRUCTURED DATA EXTRACTION (Golden Prompt)")
     print(f"{'─' * 70}")
 
-    cache = load_cache()
-    papers = df.copy()
-    if limit:
-        papers = papers.head(limit)
+    cache = load_cache(CACHE_FILE)
+    papers = df.head(limit) if limit else df
 
     total = len(papers)
-    already_done = sum(1 for doi in papers["doi"] if str(doi) in cache)
+    already_done = sum(
+        1 for _, row in papers.iterrows()
+        if safe_doi_key(row.get("doi"), row.get("title", "")) in cache
+    )
     print(f"  Total papers: {total:,}")
     print(f"  Already extracted (cached): {already_done:,}")
     print(f"  Remaining: {total - already_done:,}")
@@ -149,13 +144,14 @@ def run_extraction(
     processed = 0
 
     for i, (idx, row) in enumerate(papers.iterrows()):
-        doi = str(row.get("doi", ""))
         title = str(row.get("title", ""))
         abstract = str(row.get("abstract", ""))
+        doi_str = str(row.get("doi", ""))
+        cache_key = safe_doi_key(row.get("doi"), title)
 
         # Check cache
-        if doi in cache:
-            results.append({**cache[doi], "doi": doi})
+        if cache_key in cache:
+            results.append({**cache[cache_key], "doi": doi_str})
             continue
 
         user_prompt = build_user_prompt(title, abstract)
@@ -167,13 +163,19 @@ def run_extraction(
                 schema=ExtractionResult,
             )
 
-            # Post-processing: convert sample_size=0 to null
+            # Post-processing guards
             sample_size = result.sample_size
-            if sample_size is not None and sample_size <= 0:
-                sample_size = None
+            if sample_size is not None:
+                if sample_size <= 0:
+                    sample_size = None
+                elif sample_size > MAX_PLAUSIBLE_SAMPLE_SIZE:
+                    logger.warning(
+                        f"Implausible sample_size={sample_size} for {cache_key}, setting to null"
+                    )
+                    sample_size = None
 
             entry = {
-                "doi": doi,
+                "doi": doi_str,
                 "study_design": result.study_design.value,
                 "level_of_evidence": result.level_of_evidence,
                 "sample_size": sample_size,
@@ -188,13 +190,13 @@ def run_extraction(
 
             # Cache
             cache_entry = {k: v for k, v in entry.items() if k != "doi"}
-            cache[doi] = cache_entry
+            cache[cache_key] = cache_entry
             processed += 1
 
         except Exception as e:
-            print(f"  ⚠ Error on paper {doi}: {e}")
+            logger.warning(f"Error on paper {cache_key}: {e}")
             results.append({
-                "doi": doi,
+                "doi": doi_str,
                 "study_design": "other",
                 "level_of_evidence": "unclear",
                 "sample_size": None,
@@ -207,13 +209,13 @@ def run_extraction(
             })
 
         # Progress
-        if (i + 1) % 50 == 0 or (i + 1) == total:
+        if should_report_progress(i, total, LLM_BATCH_SIZE):
             pct = (i + 1) / total * 100
             print(f"  Progress: {i+1:,}/{total:,} ({pct:.1f}%) "
                   f"| Processed this run: {processed:,}")
-            save_cache(cache)
+            save_cache(cache, CACHE_FILE)
 
-    save_cache(cache)
+    save_cache(cache, CACHE_FILE)
 
     # Build results DataFrame
     results_df = pd.DataFrame(results)

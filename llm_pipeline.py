@@ -28,11 +28,15 @@ from pathlib import Path
 import pandas as pd
 
 from config import FIELD_NAME, LLM_PROVIDER, LLM_MODEL
+from llm_utils import setup_logging
 
 # ── Paths ─────────────────────────────────────────────────────────────
 RAW_INPUT = Path(__file__).parent / "results_refined" / "all_results.csv"
 FILTERED_INPUT = Path(__file__).parent / "results_curated" / "all_filtered.csv"
 ENRICHED_OUTPUT = Path(__file__).parent / "results_curated" / "llm_enriched.csv"
+
+# ── Valid step names ──────────────────────────────────────────────────
+VALID_STEPS = {"abstract", "screen", "classify", "extract", "validate", "all"}
 
 
 def parse_args():
@@ -73,14 +77,30 @@ def parse_args():
     return parser.parse_args()
 
 
+def _validate_steps(steps_str: str) -> list[str]:
+    """Validate and parse step names, catching typos early."""
+    if steps_str == "all":
+        return ["abstract", "screen", "classify", "extract", "validate"]
+
+    steps = [s.strip() for s in steps_str.split(",")]
+    invalid = [s for s in steps if s not in VALID_STEPS]
+
+    if invalid:
+        print(f"ERROR: Unknown step(s): {invalid}")
+        print(f"Valid steps: {sorted(VALID_STEPS)}")
+        sys.exit(1)
+
+    return steps
+
+
 def main():
+    # Set up logging
+    setup_logging()
+
     args = parse_args()
 
-    # Parse steps
-    if args.steps == "all":
-        steps = ["abstract", "screen", "classify", "extract", "validate"]
-    else:
-        steps = [s.strip() for s in args.steps.split(",")]
+    # Validate steps (catches typos like "scren" instead of "screen")
+    steps = _validate_steps(args.steps)
 
     print("=" * 70)
     print("LLM-AUGMENTED BIBLIOMETRIC ANALYSIS PIPELINE")
@@ -150,9 +170,9 @@ def main():
     # STEP 1: ABSTRACT RETRIEVAL
     # ══════════════════════════════════════════════════════════════════
     if "abstract" in steps:
-        print(f"\n{'═' * 70}")
+        print(f"\n{'=' * 70}")
         print("STEP 1: ABSTRACT RETRIEVAL")
-        print(f"{'═' * 70}")
+        print(f"{'=' * 70}")
         from fetch_abstracts import main as fetch_main
         fetch_main(input_path=str(RAW_INPUT))
 
@@ -180,22 +200,26 @@ def main():
     # ══════════════════════════════════════════════════════════════════
     screening_results = None
     if "screen" in steps:
-        print(f"\n{'═' * 70}")
+        print(f"\n{'=' * 70}")
         print("STEP 2: LLM RELEVANCE SCREENING")
-        print(f"{'═' * 70}")
+        print(f"{'=' * 70}")
         from llm_screening import run_screening
         # Screen ALL raw papers (not just filtered)
         screen_input = df_raw.head(args.limit) if args.limit else df_raw
         screening_results = run_screening(screen_input, llm, limit=args.limit)
+
+        # Apply human overrides from disputes.csv if they exist
+        from llm_validation import import_disputes
+        screening_results = import_disputes(screening_results)
 
     # ══════════════════════════════════════════════════════════════════
     # STEP 3: HIERARCHICAL CONCEPT CLASSIFICATION
     # ══════════════════════════════════════════════════════════════════
     classification_results = None
     if "classify" in steps:
-        print(f"\n{'═' * 70}")
+        print(f"\n{'=' * 70}")
         print("STEP 3: HIERARCHICAL CONCEPT CLASSIFICATION")
-        print(f"{'═' * 70}")
+        print(f"{'=' * 70}")
         from llm_classification import run_classification
         classification_results = run_classification(df_limited, llm, limit=args.limit)
 
@@ -204,9 +228,9 @@ def main():
     # ══════════════════════════════════════════════════════════════════
     extraction_results = None
     if "extract" in steps:
-        print(f"\n{'═' * 70}")
+        print(f"\n{'=' * 70}")
         print("STEP 4: STRUCTURED DATA EXTRACTION")
-        print(f"{'═' * 70}")
+        print(f"{'=' * 70}")
         from llm_extraction import run_extraction
         extraction_results = run_extraction(df_limited, llm, limit=args.limit)
 
@@ -214,9 +238,9 @@ def main():
     # STEP 5: VALIDATION
     # ══════════════════════════════════════════════════════════════════
     if "validate" in steps:
-        print(f"\n{'═' * 70}")
+        print(f"\n{'=' * 70}")
         print("STEP 5: VALIDATION")
-        print(f"{'═' * 70}")
+        print(f"{'=' * 70}")
         _run_validation(
             df_raw=df_raw,
             df_filtered=df_filtered,
@@ -234,9 +258,9 @@ def main():
 
     # ── Final usage report ────────────────────────────────────────────
     usage = llm.get_usage_summary()
-    print(f"\n{'═' * 70}")
+    print(f"\n{'=' * 70}")
     print("LLM USAGE SUMMARY")
-    print(f"{'═' * 70}")
+    print(f"{'=' * 70}")
     print(f"  Provider:       {usage['provider']}")
     print(f"  Model:          {usage['model']}")
     print(f"  Total calls:    {usage['total_calls']:,}")
@@ -244,7 +268,7 @@ def main():
     print(f"  Output tokens:  {usage['total_output_tokens']:,}")
     print(f"  Estimated cost: ${usage['estimated_cost_usd']:.4f}")
 
-    print(f"\n✅ Pipeline complete!")
+    print(f"\nPipeline complete!")
 
 
 def _print_cost_estimate(llm, n_papers: int, steps: list[str]):
@@ -254,25 +278,26 @@ def _print_cost_estimate(llm, n_papers: int, steps: list[str]):
     print(f"{'─' * 70}")
 
     total_cost = 0.0
+
+    # Stage 1 (domain) + Stage 2 (concept) estimated separately
     step_configs = {
-        "screen": ("Screening", 600, 80),
-        "classify": ("Classification (2 calls)", 800, 120),
-        "extract": ("Extraction", 900, 200),
+        "screen": [("Screening", 600, 80)],
+        "classify": [
+            ("Classification Stage 1 (domain)", 400, 60),
+            ("Classification Stage 2 (concept)", 600, 100),
+        ],
+        "extract": [("Extraction", 900, 200)],
     }
 
-    for step, (label, avg_in, avg_out) in step_configs.items():
+    for step, configs in step_configs.items():
         if step in steps:
-            est = llm.estimate_cost(n_papers, avg_in, avg_out)
-            cost = est["estimated_cost_usd"]
-            total_cost += cost
-            print(f"  {label:30s}: {n_papers:,} papers × ~{avg_in}+{avg_out} tokens = ${cost:.4f}")
+            for label, avg_in, avg_out in configs:
+                est = llm.estimate_cost(n_papers, avg_in, avg_out)
+                cost = est["estimated_cost_usd"]
+                total_cost += cost
+                print(f"  {label:40s}: {n_papers:,} papers x ~{avg_in}+{avg_out} tok = ${cost:.4f}")
 
-    if "classify" in steps:
-        # Classification makes 2 calls per paper (domain + concept)
-        est2 = llm.estimate_cost(n_papers, 500, 80)
-        total_cost += est2["estimated_cost_usd"]
-
-    print(f"\n  {'TOTAL ESTIMATED COST':30s}: ${total_cost:.4f}")
+    print(f"\n  {'TOTAL ESTIMATED COST':40s}: ${total_cost:.4f}")
     if llm.provider == "ollama":
         print(f"  (Ollama is free — running locally)")
 
@@ -365,13 +390,18 @@ def _run_validation(
 
 
 def _merge_results(df, classification_results, extraction_results, screening_results):
-    """Merge all LLM results into a single enriched CSV."""
+    """Merge all LLM results into a single enriched CSV (idempotent)."""
     print(f"\n{'─' * 70}")
     print("MERGING ENRICHED DATASET")
     print(f"{'─' * 70}")
 
     enriched = df.copy()
     enriched["doi"] = enriched["doi"].astype(str)
+
+    # Remove any previously merged LLM columns to prevent _x/_y duplicates
+    llm_cols = [c for c in enriched.columns if c.startswith("llm_")]
+    if llm_cols:
+        enriched = enriched.drop(columns=llm_cols)
 
     # Merge classification
     if classification_results is not None:
@@ -407,7 +437,7 @@ def _merge_results(df, classification_results, extraction_results, screening_res
     # Save
     ENRICHED_OUTPUT.parent.mkdir(exist_ok=True)
     enriched.to_csv(ENRICHED_OUTPUT, index=False)
-    print(f"  Enriched dataset: {len(enriched):,} papers × {len(enriched.columns)} columns")
+    print(f"  Enriched dataset: {len(enriched):,} papers x {len(enriched.columns)} columns")
     print(f"  Saved to: {ENRICHED_OUTPUT}")
 
 

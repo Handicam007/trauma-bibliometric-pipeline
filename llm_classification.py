@@ -15,19 +15,23 @@ Cache:  llm_cache/classification_progress.json
 
 from __future__ import annotations
 
-import json
+import logging
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
 
 from concept_definitions import CLINICAL_CONCEPTS, DOMAIN_GROUPS
-from config import FIELD_NAME
+from config import FIELD_NAME, LLM_BATCH_SIZE
 from llm_providers import LLMProvider
 from llm_schemas import ConceptClassification, DomainClassification, DOMAIN_NAMES
+from llm_utils import (
+    safe_doi_key, load_cache, save_cache, should_report_progress,
+)
 
-CACHE_DIR = Path(__file__).parent / "llm_cache"
-CACHE_FILE = CACHE_DIR / "classification_progress.json"
+logger = logging.getLogger("llm_pipeline.classification")
+
+CACHE_FILE = Path(__file__).parent / "llm_cache" / "classification_progress.json"
 OUTPUT_FILE = Path(__file__).parent / "results_curated" / "llm_concepts.csv"
 
 
@@ -101,20 +105,6 @@ RULES:
 Respond ONLY with valid JSON matching the required schema."""
 
 
-def load_cache() -> dict:
-    if CACHE_FILE.exists():
-        try:
-            return json.loads(CACHE_FILE.read_text())
-        except json.JSONDecodeError:
-            return {}
-    return {}
-
-
-def save_cache(cache: dict):
-    CACHE_DIR.mkdir(exist_ok=True)
-    CACHE_FILE.write_text(json.dumps(cache, indent=2, ensure_ascii=False))
-
-
 def run_classification(
     df: pd.DataFrame,
     llm: LLMProvider,
@@ -137,13 +127,14 @@ def run_classification(
     print(f"  Stage 1: {len(DOMAIN_NAMES)} domains")
     print(f"  Stage 2: {len(CLINICAL_CONCEPTS)} concepts across domains")
 
-    cache = load_cache()
-    papers = df.copy()
-    if limit:
-        papers = papers.head(limit)
+    cache = load_cache(CACHE_FILE)
+    papers = df.head(limit) if limit else df
 
     total = len(papers)
-    already_done = sum(1 for doi in papers["doi"] if str(doi) in cache)
+    already_done = sum(
+        1 for _, row in papers.iterrows()
+        if safe_doi_key(row.get("doi"), row.get("title", "")) in cache
+    )
     print(f"  Total papers: {total:,}")
     print(f"  Already classified (cached): {already_done:,}")
     print(f"  Remaining: {total - already_done:,}")
@@ -151,14 +142,20 @@ def run_classification(
     results = []
     processed = 0
 
+    # Track concept adherence for quality metrics
+    total_concepts_returned = 0
+    total_concepts_valid = 0
+    dropped_concepts = []
+
     for i, (idx, row) in enumerate(papers.iterrows()):
-        doi = str(row.get("doi", ""))
         title = str(row.get("title", ""))
         abstract = str(row.get("abstract", ""))
+        doi_str = str(row.get("doi", ""))
+        cache_key = safe_doi_key(row.get("doi"), title)
 
         # Check cache
-        if doi in cache:
-            results.append({**cache[doi], "doi": doi})
+        if cache_key in cache:
+            results.append({**cache[cache_key], "doi": doi_str})
             continue
 
         abs_text = abstract.strip() if abstract and len(abstract) > 10 else "(No abstract available)"
@@ -181,10 +178,19 @@ def run_classification(
             )
 
             # Validate concept names against known concepts
-            valid_concepts = [c for c in concept_result.concepts if c in CLINICAL_CONCEPTS]
+            raw_concepts = concept_result.concepts
+            valid_concepts = [c for c in raw_concepts if c in CLINICAL_CONCEPTS]
+
+            # Track adherence (how often LLM returns valid concept names)
+            total_concepts_returned += len(raw_concepts)
+            total_concepts_valid += len(valid_concepts)
+            invalid = [c for c in raw_concepts if c not in CLINICAL_CONCEPTS]
+            if invalid:
+                dropped_concepts.extend(invalid)
+                logger.info(f"Dropped non-matching concepts for {cache_key}: {invalid}")
 
             entry = {
-                "doi": doi,
+                "doi": doi_str,
                 "domains": "|".join(domain_result.domains),
                 "concepts": "|".join(valid_concepts),
                 "primary_concept": concept_result.primary_concept
@@ -197,13 +203,13 @@ def run_classification(
 
             # Cache (without doi)
             cache_entry = {k: v for k, v in entry.items() if k != "doi"}
-            cache[doi] = cache_entry
+            cache[cache_key] = cache_entry
             processed += 1
 
         except Exception as e:
-            print(f"  ⚠ Error on paper {doi}: {e}")
+            logger.warning(f"Error on paper {cache_key}: {e}")
             results.append({
-                "doi": doi,
+                "doi": doi_str,
                 "domains": "",
                 "concepts": "",
                 "primary_concept": None,
@@ -213,13 +219,13 @@ def run_classification(
             })
 
         # Progress
-        if (i + 1) % 50 == 0 or (i + 1) == total:
+        if should_report_progress(i, total, LLM_BATCH_SIZE):
             pct = (i + 1) / total * 100
             print(f"  Progress: {i+1:,}/{total:,} ({pct:.1f}%) "
                   f"| Processed this run: {processed:,}")
-            save_cache(cache)
+            save_cache(cache, CACHE_FILE)
 
-    save_cache(cache)
+    save_cache(cache, CACHE_FILE)
 
     # Build results DataFrame
     results_df = pd.DataFrame(results)
@@ -232,8 +238,23 @@ def run_classification(
     n_with_concepts = (results_df["n_concepts"] > 0).sum()
     avg_concepts = results_df["n_concepts"].mean()
     print(f"\n  Results:")
-    print(f"    Papers with ≥1 concept: {n_with_concepts:,} ({n_with_concepts/total*100:.1f}%)")
+    print(f"    Papers with >= 1 concept: {n_with_concepts:,} ({n_with_concepts/total*100:.1f}%)")
     print(f"    Average concepts/paper: {avg_concepts:.2f}")
+
+    # Concept adherence metrics
+    if total_concepts_returned > 0:
+        adherence_rate = total_concepts_valid / total_concepts_returned * 100
+        print(f"\n  Concept Adherence:")
+        print(f"    Total concepts returned by LLM: {total_concepts_returned:,}")
+        print(f"    Valid (matched vocabulary):     {total_concepts_valid:,}")
+        print(f"    Dropped (unrecognized):         {total_concepts_returned - total_concepts_valid:,}")
+        print(f"    Adherence rate:                 {adherence_rate:.1f}%")
+        if dropped_concepts:
+            from collections import Counter
+            top_dropped = Counter(dropped_concepts).most_common(10)
+            print(f"\n  Top dropped concept names (LLM hallucinations):")
+            for name, count in top_dropped:
+                print(f"    {count:>4}x — \"{name}\"")
 
     # Top concepts
     all_concepts = []

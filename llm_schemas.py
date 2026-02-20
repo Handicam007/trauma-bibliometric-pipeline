@@ -44,6 +44,9 @@ class ScreeningResult(BaseModel):
 # HIERARCHICAL CLASSIFICATION — Stage 1 (Domain)
 # ═══════════════════════════════════════════════════════════════════════
 
+# WARNING: DOMAIN_NAMES and DomainLiteral must be kept in sync.
+# Python's Literal type cannot be constructed from a list at runtime,
+# so this duplication is forced. If you add/remove a domain, update BOTH.
 DOMAIN_NAMES = [
     "Resuscitation & Blood Products",
     "Surgical Techniques & Approaches",
@@ -144,15 +147,3 @@ class ExtractionResult(BaseModel):
 def schema_to_json_schema(model_class: type[BaseModel]) -> dict:
     """Convert a Pydantic model to a JSON Schema dict for LLM structured output."""
     return model_class.model_json_schema()
-
-
-def schema_to_openai_format(model_class: type[BaseModel]) -> dict:
-    """Convert Pydantic model to OpenAI's response_format parameter."""
-    return {
-        "type": "json_schema",
-        "json_schema": {
-            "name": model_class.__name__,
-            "schema": model_class.model_json_schema(),
-            "strict": True,
-        },
-    }
