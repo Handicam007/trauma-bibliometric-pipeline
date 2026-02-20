@@ -1,0 +1,60 @@
+[project]
+name = "bibtool"
+version = '0.0.1'
+authors = [
+    {name= 'Gabriel Lepetit-Aimon', email= 'gabriel.lepetit-aimon@polymtl.ca'},
+]
+description = "Bibliography scripting tool."
+readme = 'README.md'
+
+requires-python = '>=3.10'
+dependencies = [
+    'numpy',
+    'pandas',
+    'rich',
+    'torch',
+    'transformers',
+    'pyautogui',
+    'xmltodict',
+    'metapub',
+    'scipdf @ git+https://github.com/titipata/scipdf_parser',
+]
+
+[project.optional-dependencies]
+dev = [
+    'pytest',
+    'pytest-doctestplus',
+    'ruff',
+]
+
+
+[project.urls]
+Homepage = 'https://github.com/gabriel-lepetitaimon/bibtool'
+Source = 'https://github.com/gabriel-lepetitaimon/bibtool'
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.black]
+line-length = 120
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+# Enable flake8-bugbear (`B`) rules.
+select = ["E", "F", "B", "I"]
+# Avoid trying to fix flake8-bugbear (`B`) violations.
+unfixable = ["B"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["E402", "F401"]
+"**.ipynb" = ["E402", "F401"]
+
+[tool.pytest.ini_options]
+addopts          = "--doctest-plus src/bibtool --doctest-ignore-import-errors --doctest-report ndiff"
+testpaths        = ["tests"]
+doctest_optionflags = ["NORMALIZE_WHITESPACE", "ELLIPSIS"]
+
+[project.scripts]
+bibtool-scan = "bibtool.scripts.scan:scan_save_pubmed"
