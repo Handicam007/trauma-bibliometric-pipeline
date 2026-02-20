@@ -24,7 +24,7 @@ import pandas as pd
 from concept_definitions import CLINICAL_CONCEPTS, DOMAIN_GROUPS
 from config import FIELD_NAME, LLM_BATCH_SIZE
 from llm_providers import LLMProvider
-from llm_schemas import ConceptClassification, DomainClassification, DOMAIN_NAMES
+from llm_schemas import ConceptClassification, DomainClassification, DOMAIN_NAMES, CONCEPT_NAMES
 from llm_utils import (
     safe_doi_key, load_cache, save_cache, should_report_progress,
 )

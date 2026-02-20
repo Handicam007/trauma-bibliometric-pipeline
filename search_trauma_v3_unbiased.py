@@ -27,7 +27,9 @@ ALL queries are restricted to:
 Deduplication by DOI is handled automatically by bibtool.
 """
 
+import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "bibtool" / "src"))
@@ -244,6 +246,12 @@ QUERY_LIMITS = {
 def run_search():
     search = LiteratureSearch()
 
+    # ── Track search metadata for reproducibility ─────────────────────
+    search_start = datetime.now(timezone.utc)
+    query_metadata = []
+    truncation_events = []
+    query_errors = []
+
     for i, (name, query) in enumerate(QUERIES.items()):
         limit = QUERY_LIMITS[name]
         layer = name.split("_")[0]  # L1, L2, L3
@@ -251,12 +259,49 @@ def run_search():
         print(f"[{i+1}/{len(QUERIES)}] {name}  (Layer {layer}, max {limit}/yr)", flush=True)
         print(f"  Query: {query.query[:120]}...", flush=True)
         print(f"{'='*60}", flush=True)
+
+        n_before = len(search.results) if search.results is not None else 0
         try:
             search.scan(query, max_results_per_year=limit, source="scopus")
-            n = len(search.results) if search.results is not None else 0
-            print(f"  -> Running total (deduplicated): {n} unique papers", flush=True)
+            n_after = len(search.results) if search.results is not None else 0
+            n_new = n_after - n_before
+            print(f"  -> Running total (deduplicated): {n_after} unique papers", flush=True)
+
+            # Check for possible truncation (heuristic: if n_new == limit * years)
+            n_years = (query.max_year or 2026) - (query.min_year or 2020) + 1
+            max_possible = limit * n_years
+            if n_new >= max_possible * 0.95:  # Within 5% of cap = likely truncated
+                warn_msg = (
+                    f"⚠ Query '{name}' returned {n_new} papers, "
+                    f"near cap of {max_possible} ({limit}/yr × {n_years} yrs). "
+                    f"Results may be TRUNCATED."
+                )
+                print(f"  {warn_msg}", flush=True)
+                truncation_events.append({
+                    "query": name,
+                    "papers_returned": n_new,
+                    "cap": max_possible,
+                    "limit_per_year": limit,
+                })
+
+            query_metadata.append({
+                "query_name": name,
+                "layer": layer,
+                "limit_per_year": limit,
+                "papers_added": n_new,
+                "status": "success",
+            })
+
         except Exception as e:
             print(f"  ERROR: {e}", flush=True)
+            query_errors.append({"query": name, "error": str(e)})
+            query_metadata.append({
+                "query_name": name,
+                "layer": layer,
+                "limit_per_year": limit,
+                "papers_added": 0,
+                "status": f"error: {e}",
+            })
             continue
 
     if search.results is None or search.results.empty:
@@ -340,6 +385,45 @@ def run_search():
     for rank, (_, row) in enumerate(top20.iterrows(), 1):
         print(f"\n  {rank:>2}. {row['title'][:100]}")
         print(f"      {row.get('publication', '')} ({row['year']}) — {row['citations_count']} citations")
+
+    # ── Save search metadata ─────────────────────────────────────────
+    search_end = datetime.now(timezone.utc)
+    metadata = {
+        "search_date_utc": search_start.isoformat(),
+        "search_end_utc": search_end.isoformat(),
+        "duration_seconds": round((search_end - search_start).total_seconds(), 1),
+        "database": "Scopus",
+        "api_interface": "Elsevier Scopus Search API (via bibtool)",
+        "geographic_filter": NA_FILTER.strip(),
+        "year_range": "2020-2026",
+        "total_unique_papers": len(df),
+        "total_queries": len(QUERIES),
+        "queries_successful": sum(1 for q in query_metadata if q["status"] == "success"),
+        "queries_failed": len(query_errors),
+        "truncation_warnings": len(truncation_events),
+        "query_details": query_metadata,
+        "truncation_events": truncation_events,
+        "query_errors": query_errors,
+        "note": (
+            "This is a single-database search (Scopus only). "
+            "Per-query annual caps may truncate results — check truncation_events. "
+            "Cross-validation against PubMed and Web of Science is recommended."
+        ),
+    }
+
+    metadata_file = OUTPUT_DIR / "search_metadata.json"
+    metadata_file.write_text(json.dumps(metadata, indent=2, ensure_ascii=False))
+    print(f"\n  📋 Search metadata saved to: {metadata_file}")
+
+    if truncation_events:
+        print(f"\n  ⚠ {len(truncation_events)} queries may have been truncated:")
+        for te in truncation_events:
+            print(f"    {te['query']}: {te['papers_returned']}/{te['cap']} papers")
+
+    if query_errors:
+        print(f"\n  ❌ {len(query_errors)} queries failed:")
+        for qe in query_errors:
+            print(f"    {qe['query']}: {qe['error']}")
 
     print(f"\n\nAll CSVs saved to: {OUTPUT_DIR}/")
 

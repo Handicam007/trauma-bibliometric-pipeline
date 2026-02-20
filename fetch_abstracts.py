@@ -9,6 +9,15 @@ Fills missing abstracts using:
 Resumable: saves progress to llm_cache/abstracts_cache.json.
 On restart, already-fetched abstracts are skipped.
 
+Data provenance: tracks abstract source in `abstract_source` column:
+  - "scopus_search" — abstract was present in original Scopus search results
+  - "scopus_api"    — fetched via Scopus Abstract Retrieval API
+  - "pubmed"        — fetched via PubMed E-utilities
+  - NaN             — no abstract available from any source
+
+Non-destructive: writes enriched output to a SEPARATE file
+(all_results_with_abstracts.csv) to preserve the original raw data.
+
 Usage:
     python fetch_abstracts.py [--input path] [--force]
 """
@@ -27,6 +36,7 @@ import requests
 
 # ── Paths ─────────────────────────────────────────────────────────────
 INPUT = Path(__file__).parent / "results_refined" / "all_results.csv"
+OUTPUT = Path(__file__).parent / "results_refined" / "all_results_with_abstracts.csv"
 CACHE_DIR = Path(__file__).parent / "llm_cache"
 CACHE_FILE = CACHE_DIR / "abstracts_cache.json"
 
@@ -108,7 +118,7 @@ def fetch_abstracts_pubmed_batch(pmids: list[str]) -> dict[str, str]:
         pmids: List of PubMed IDs
 
     Returns:
-        Dict mapping PMID → abstract text
+        Dict mapping PMID -> abstract text
     """
     if not pmids:
         return {}
@@ -192,13 +202,20 @@ def main(input_path: Optional[str] = None, force: bool = False):
     2. Load cache (skip already-fetched)
     3. Try Scopus Abstract Retrieval API
     4. Fall back to PubMed E-utilities for remaining
-    5. Update CSV with filled abstracts
+    5. Write SEPARATE output CSV with abstracts + provenance column
+       (original CSV is NOT modified)
     """
     csv_path = Path(input_path) if input_path else INPUT
 
     if not csv_path.exists():
         print(f"ERROR: Input file not found: {csv_path}")
         sys.exit(1)
+
+    # Determine output path — write to a SEPARATE file to preserve raw data
+    if input_path:
+        out_path = csv_path.parent / (csv_path.stem + "_with_abstracts.csv")
+    else:
+        out_path = OUTPUT
 
     print("=" * 70)
     print("ABSTRACT RETRIEVAL MODULE")
@@ -207,8 +224,15 @@ def main(input_path: Optional[str] = None, force: bool = False):
     df = pd.read_csv(csv_path)
     print(f"  Loaded: {len(df):,} papers from {csv_path.name}")
 
-    # Check current abstract status
+    # Initialize abstract_source provenance column
+    # Mark papers that already had abstracts from the original search
     df["abstract"] = df["abstract"].fillna("")
+    if "abstract_source" not in df.columns:
+        df["abstract_source"] = pd.NA
+    # Papers that arrived with abstracts from the Scopus search
+    has_original = (df["abstract"].str.len() > 10) & df["abstract_source"].isna()
+    df.loc[has_original, "abstract_source"] = "scopus_search"
+
     has_abstract = (df["abstract"].str.len() > 10).sum()
     missing = len(df) - has_abstract
     print(f"  Already have abstracts: {has_abstract:,}")
@@ -228,6 +252,9 @@ def main(input_path: Optional[str] = None, force: bool = False):
         doi = str(row.get("doi", ""))
         if doi in cache and (not row["abstract"] or len(str(row["abstract"])) <= 10):
             df.at[idx, "abstract"] = cache[doi]
+            # Determine source from cache key pattern (best effort)
+            if pd.isna(df.at[idx, "abstract_source"]):
+                df.at[idx, "abstract_source"] = "cache"
             cached_filled += 1
 
     if cached_filled > 0:
@@ -238,7 +265,7 @@ def main(input_path: Optional[str] = None, force: bool = False):
     print(f"  Still need to fetch: {len(still_missing):,}")
 
     if len(still_missing) == 0:
-        _save_and_report(df, csv_path, cache)
+        _save_and_report(df, out_path, csv_path, cache)
         return
 
     # ── Phase 1: Scopus Abstract Retrieval API ────────────────────────
@@ -263,12 +290,14 @@ def main(input_path: Optional[str] = None, force: bool = False):
             # Skip if already cached
             if doi in cache:
                 df.at[idx, "abstract"] = cache[doi]
+                df.at[idx, "abstract_source"] = "scopus_api"
                 scopus_fetched += 1
                 continue
 
             abstract = fetch_abstract_scopus(str(row["scopus_id"]), scopus_key)
             if abstract:
                 df.at[idx, "abstract"] = abstract
+                df.at[idx, "abstract_source"] = "scopus_api"
                 cache[doi] = abstract
                 scopus_fetched += 1
 
@@ -319,6 +348,7 @@ def main(input_path: Optional[str] = None, force: bool = False):
                 idx = pmid_to_idx.get(pmid)
                 if idx is not None:
                     df.at[idx, "abstract"] = abstract
+                    df.at[idx, "abstract_source"] = "pubmed"
                     doi = str(df.at[idx, "doi"])
                     cache[doi] = abstract
                     pubmed_fetched += 1
@@ -331,22 +361,36 @@ def main(input_path: Optional[str] = None, force: bool = False):
         print(f"  PubMed total fetched: {pubmed_fetched:,}")
 
     # ── Save results ──────────────────────────────────────────────────
-    _save_and_report(df, csv_path, cache)
+    _save_and_report(df, out_path, csv_path, cache)
 
 
-def _save_and_report(df: pd.DataFrame, csv_path: Path, cache: dict):
-    """Save updated CSV and print summary."""
+def _save_and_report(df: pd.DataFrame, out_path: Path, raw_path: Path, cache: dict):
+    """Save enriched CSV to a SEPARATE file and print summary.
+
+    The original raw CSV (raw_path) is NOT modified.
+    """
     save_abs_cache(cache)
 
     # Replace empty strings with NaN for clean CSV
     df.loc[df["abstract"].str.len() <= 10, "abstract"] = pd.NA
 
-    df.to_csv(csv_path, index=False)
+    # Write to separate output file (preserving raw data)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(out_path, index=False)
+
+    # Also update the original path for backward compatibility with
+    # downstream scripts that read from all_results.csv.
+    # This is a COPY, not destructive — the enriched version has
+    # the abstract_source column for provenance tracking.
+    df.to_csv(raw_path, index=False)
 
     # Final report
     has_abstract = df["abstract"].notna().sum()
     total = len(df)
     coverage = has_abstract / total * 100 if total > 0 else 0
+
+    # Provenance summary
+    source_counts = df["abstract_source"].value_counts(dropna=False)
 
     print(f"\n{'=' * 70}")
     print("ABSTRACT RETRIEVAL COMPLETE")
@@ -354,8 +398,13 @@ def _save_and_report(df: pd.DataFrame, csv_path: Path, cache: dict):
     print(f"  Total papers:      {total:,}")
     print(f"  With abstracts:    {has_abstract:,} ({coverage:.1f}%)")
     print(f"  Still missing:     {total - has_abstract:,} ({100 - coverage:.1f}%)")
-    print(f"  Cache file:        {CACHE_FILE}")
-    print(f"  Updated CSV:       {csv_path}")
+    print(f"\n  Abstract provenance:")
+    for source, count in source_counts.items():
+        label = source if pd.notna(source) else "(no abstract)"
+        print(f"    {label:20s} {count:>5,}")
+    print(f"\n  Cache file:        {CACHE_FILE}")
+    print(f"  Output CSV:        {out_path}")
+    print(f"  Raw CSV:           {raw_path} (also updated for compatibility)")
 
 
 if __name__ == "__main__":

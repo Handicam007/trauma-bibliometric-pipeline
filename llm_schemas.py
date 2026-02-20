@@ -78,11 +78,110 @@ class DomainClassification(BaseModel):
 # HIERARCHICAL CLASSIFICATION — Stage 2 (Concept)
 # ═══════════════════════════════════════════════════════════════════════
 
+# WARNING: CONCEPT_NAMES and ConceptLiteral must be kept in sync with
+# CLINICAL_CONCEPTS in concept_definitions.py. Python's Literal type
+# cannot be constructed from a list at runtime, so this duplication is
+# forced. If you add/remove a concept, update BOTH this file AND
+# concept_definitions.py. Run `python validate.py` after editing.
+CONCEPT_NAMES = [
+    "Geriatric / Frailty",
+    "Trauma Systems / QI",
+    "Hemorrhage Control",
+    "Pediatric Trauma",
+    "REBOA",
+    "Prehospital / EMS",
+    "Whole Blood / MTP",
+    "Penetrating Trauma",
+    "AI / Machine Learning",
+    "Blunt Trauma",
+    "Damage Control",
+    "Simulation / Training",
+    "POCUS / eFAST",
+    "Splenic Injury",
+    "Coagulopathy (TIC)",
+    "Liver Injury",
+    "Rib Fixation (SSRF)",
+    "Non-Operative Mgmt",
+    "Angioembolization",
+    "TBI / Neurotrauma",
+    "TEG / ROTEM",
+    "Fibrinogen / Cryo",
+    "Resuscitative Thoracotomy",
+    "Fracture Management",
+    "Orthopaedic Trauma",
+    "Pelvic / Acetabular",
+    "Hip / Femur Fracture",
+    "Military / Combat",
+    "Polytrauma",
+    "Spinal Cord Injury",
+    "Thoracic Trauma",
+    "Abdominal Trauma",
+    "Vascular Injury",
+    "Teletrauma / Remote",
+    "COVID-19 Impact",
+    "Triage Systems",
+    "VTE Prevention",
+    "Airway / Tracheostomy",
+    "ECMO in Trauma",
+    "Mass Casualty / Disaster",
+    "Firearm / Gun Violence",
+]
+
+ConceptLiteral = Literal[
+    "Geriatric / Frailty",
+    "Trauma Systems / QI",
+    "Hemorrhage Control",
+    "Pediatric Trauma",
+    "REBOA",
+    "Prehospital / EMS",
+    "Whole Blood / MTP",
+    "Penetrating Trauma",
+    "AI / Machine Learning",
+    "Blunt Trauma",
+    "Damage Control",
+    "Simulation / Training",
+    "POCUS / eFAST",
+    "Splenic Injury",
+    "Coagulopathy (TIC)",
+    "Liver Injury",
+    "Rib Fixation (SSRF)",
+    "Non-Operative Mgmt",
+    "Angioembolization",
+    "TBI / Neurotrauma",
+    "TEG / ROTEM",
+    "Fibrinogen / Cryo",
+    "Resuscitative Thoracotomy",
+    "Fracture Management",
+    "Orthopaedic Trauma",
+    "Pelvic / Acetabular",
+    "Hip / Femur Fracture",
+    "Military / Combat",
+    "Polytrauma",
+    "Spinal Cord Injury",
+    "Thoracic Trauma",
+    "Abdominal Trauma",
+    "Vascular Injury",
+    "Teletrauma / Remote",
+    "COVID-19 Impact",
+    "Triage Systems",
+    "VTE Prevention",
+    "Airway / Tracheostomy",
+    "ECMO in Trauma",
+    "Mass Casualty / Disaster",
+    "Firearm / Gun Violence",
+]
+
+
 class ConceptClassification(BaseModel):
-    """Level 2: Specific concepts within assigned domain(s)."""
-    concepts: List[str] = Field(
+    """Level 2: Specific concepts within assigned domain(s).
+
+    Uses Literal type constraint to enforce valid concept names at the
+    schema level. LLMs using strict JSON mode will only return valid
+    concept names from the vocabulary.
+    """
+    concepts: List[ConceptLiteral] = Field(
         description="All applicable clinical concepts from the provided list")
-    primary_concept: Optional[str] = Field(None,
+    primary_concept: Optional[ConceptLiteral] = Field(None,
         description="The single most relevant concept, if any")
     confidence: float = Field(ge=0.0, le=1.0,
         description="Confidence in concept assignment")

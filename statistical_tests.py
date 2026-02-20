@@ -252,8 +252,10 @@ def run_trend_analysis(df):
 
         total_match = early_match + late_match
 
-        # Skip concepts with too few papers for meaningful inference
-        if total_match < 5:
+        # Skip concepts with too few papers for meaningful inference.
+        # Threshold of 15 ensures stable odds ratios and adequate power
+        # for detecting meaningful effect sizes (OR >= 2.0) after BH correction.
+        if total_match < 15:
             results.append({
                 "concept": concept,
                 "early_count": early_match,
@@ -304,8 +306,15 @@ def run_trend_analysis(df):
         if not np.isnan(chi2_val):
             v = cramers_v(chi2_val, table.sum())
         else:
-            # Compute phi for Fisher's exact (from OR)
-            v = np.nan
+            # For Fisher's exact: compute phi coefficient directly from 2×2 table.
+            # phi = (ad - bc) / sqrt((a+b)(c+d)(a+c)(b+d))
+            # This is equivalent to Cramér's V for 2×2 tables.
+            n_total_table = a + b + c + d
+            denom = np.sqrt((a+b) * (c+d) * (a+c) * (b+d))
+            if denom > 0:
+                v = abs((a*d - b*c)) / denom
+            else:
+                v = np.nan
 
         # ── Percent change (normalized) ───────────────────────
         early_pct = early_match / n_early * 100 if n_early else 0
@@ -318,8 +327,11 @@ def run_trend_analysis(df):
             pct_change = 0.0
 
         # ── Cochran-Armitage trend test (year-over-year) ──────
+        # IMPORTANT: Use df_stats (not df) to match year_totals denominator.
+        # Both must use the same dataset (complete years only) to avoid
+        # numerator/denominator mismatch on partial-year data.
         year_counts = [
-            df[df["year"] == y]["title"].str.lower().str.contains(
+            df_stats[df_stats["year"] == y]["title"].str.lower().str.contains(
                 pattern, regex=True, na=False
             ).sum() for y in years
         ]
@@ -1008,7 +1020,7 @@ def print_report(results_df, cite_summary):
 
     print(f"\n  Concepts analyzed: {len(results_df)}")
     print(f"  Concepts with sufficient data: {n_tested}")
-    print(f"  Concepts with insufficient data (<5 papers): {n_insuf}")
+    print(f"  Concepts with insufficient data (<15 papers): {n_insuf}")
     print(f"  Partial year ({YEAR_MAX}) excluded from inference: Yes")
     print(f"  Statistical tests on complete years only: {TREND_EARLY[0]}-{TREND_LATE[1]}")
     n_total_tests = n_tested * 2  # chi-squared + Cochran-Armitage per concept

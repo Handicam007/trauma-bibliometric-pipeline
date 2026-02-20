@@ -1,21 +1,36 @@
-# Bibliometric Analysis Pipeline — Python Dependencies
+# Trauma Bibliometric Analysis Pipeline — Pinned Dependencies
+# =============================================================
+# Generated: 2026-02-20
+# Python: 3.12+
+#
 # Install: pip install -r requirements.txt
+# Then:    python -m spacy download en_core_web_sm
+#
+# For exact reproducibility, use these pinned versions.
+# For compatibility with newer releases, loosen the pins (e.g., pandas>=2.0).
 
-pandas>=1.5.0
-numpy>=1.23.0
-matplotlib>=3.6.0
-seaborn>=0.12.0
-wordcloud>=1.9.0
-spacy>=3.4.0
-scipy>=1.9.0
-requests>=2.28.0
-pydantic>=2.0.0
+# ── Core data science ────────────────────────────────────────
+pandas==2.3.3
+numpy==1.26.4
+scipy==1.11.4
+matplotlib==3.8.0
+seaborn==0.12.2
+wordcloud==1.9.6
 
-# LLM providers (install the one(s) you need):
-openai>=1.0.0
-anthropic>=0.20.0
-google-generativeai>=0.5.0
-# For local models: install Ollama separately (https://ollama.com)
+# ── NLP ──────────────────────────────────────────────────────
+spacy==3.8.11
+# After install: python -m spacy download en_core_web_sm
 
-# After installing, download the spaCy language model:
-#   python -m spacy download en_core_web_sm
+# ── Schema validation ───────────────────────────────────────
+pydantic==2.8.2
+
+# ── HTTP / API access ───────────────────────────────────────
+requests==2.32.5
+
+# ── LLM providers (install only what you need) ──────────────
+# At least ONE of these is required for the LLM pipeline.
+# Ollama is free and runs locally (no API key needed).
+openai==1.40.2                   # OpenAI GPT-4o-mini (default)
+anthropic==0.34.1                # Anthropic Claude 3.5 Haiku
+google-generativeai==0.8.6       # Google Gemini 2.0 Flash
+# Ollama: install from https://ollama.com (no pip package needed)

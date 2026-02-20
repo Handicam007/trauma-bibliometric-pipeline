@@ -200,7 +200,7 @@ class LLMProvider:
                 # Check if it's a rate limit error from the SDK
                 error_str = str(e).lower()
                 status_code = getattr(e, "status_code", None)
-                if status_code in (429, 503) or "rate" in error_str and "limit" in error_str:
+                if status_code in (429, 503) or ("rate" in error_str and "limit" in error_str):
                     rate_limit_attempts += 1
                     if rate_limit_attempts >= MAX_RATE_LIMIT_RETRIES:
                         raise RuntimeError(

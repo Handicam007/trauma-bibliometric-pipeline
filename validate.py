@@ -92,6 +92,33 @@ def check_regexes():
     except ImportError:
         pass  # Optional list
 
+    # 1e. Check llm_schemas.py CONCEPT_NAMES matches CLINICAL_CONCEPTS keys
+    try:
+        from llm_schemas import CONCEPT_NAMES
+        print()
+        schema_set = set(CONCEPT_NAMES)
+        concept_set = set(CLINICAL_CONCEPTS.keys())
+
+        # Concepts in CLINICAL_CONCEPTS but not in CONCEPT_NAMES
+        missing_from_schema = concept_set - schema_set
+        if missing_from_schema:
+            for c in sorted(missing_from_schema):
+                check(f"llm_schemas.CONCEPT_NAMES includes '{c}'", False,
+                      "Add this concept to CONCEPT_NAMES and ConceptLiteral in llm_schemas.py")
+
+        # Concepts in CONCEPT_NAMES but not in CLINICAL_CONCEPTS
+        extra_in_schema = schema_set - concept_set
+        if extra_in_schema:
+            for c in sorted(extra_in_schema):
+                check(f"llm_schemas.CONCEPT_NAMES -> '{c}' exists in CLINICAL_CONCEPTS", False,
+                      "Remove this concept from CONCEPT_NAMES and ConceptLiteral in llm_schemas.py")
+
+        if not missing_from_schema and not extra_in_schema:
+            check(f"llm_schemas.CONCEPT_NAMES matches CLINICAL_CONCEPTS ({len(concept_set)} concepts)", True)
+    except ImportError:
+        warn("Cannot import llm_schemas.CONCEPT_NAMES",
+             "LLM schema concept sync cannot be verified")
+
 
 # ═══════════════════════════════════════════════════════════════════
 # CHECK 2: KEYWORD LISTS IN filter_results.py
@@ -185,7 +212,10 @@ def check_config():
     check(f"BASE_YEAR ({BASE_YEAR}) = YEAR_MIN-1 ({YEAR_MIN-1})", BASE_YEAR == YEAR_MIN - 1,
           f"BASE_YEAR should be {YEAR_MIN - 1}")
     check(f"TREND_EARLY ({TREND_EARLY}) starts at YEAR_MIN", TREND_EARLY[0] == YEAR_MIN)
-    check(f"TREND_LATE ({TREND_LATE}) ends at YEAR_MAX", TREND_LATE[1] == YEAR_MAX)
+    from config import YEAR_STATS_MAX
+    check(f"TREND_LATE ({TREND_LATE}) ends at YEAR_STATS_MAX ({YEAR_STATS_MAX})",
+          TREND_LATE[1] == YEAR_STATS_MAX,
+          f"TREND_LATE should end at YEAR_STATS_MAX ({YEAR_STATS_MAX}), not {TREND_LATE[1]}")
     check(f"Trend periods don't overlap",
           TREND_EARLY[1] < TREND_LATE[0],
           f"Early ends at {TREND_EARLY[1]}, Late starts at {TREND_LATE[0]}")
