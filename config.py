@@ -96,3 +96,9 @@ LLM_CACHE_DIR = "llm_cache"       # Incremental save directory
 # Human-in-the-loop confidence thresholds
 LLM_CONFIDENCE_AUTO = 0.8         # Auto-accept if confidence >= this
 LLM_CONFIDENCE_REVIEW = 0.5       # Flag for human review if between this and AUTO
+
+# ── BENCHMARK / PUBLICATION SETTINGS ────────────────────────────────
+BENCHMARK_SAMPLE_SIZE = 200          # Papers for provider comparison
+VALIDATION_SAMPLE_SIZE = 200         # Papers for human validation sample
+CONSENSUS_RUNS = 3                   # Number of LLM runs for consensus check
+CONSENSUS_TEMPERATURES = (0.0, 0.0, 0.3)  # Temperature per consensus run

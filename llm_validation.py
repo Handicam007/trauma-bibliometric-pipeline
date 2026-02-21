@@ -1,13 +1,16 @@
 """
 LLM Validation Module
 ======================
-Five validation layers for publication-defensible LLM-augmented bibliometrics:
+Eight validation layers for publication-defensible LLM-augmented bibliometrics:
 
   1. Semantic Gap Audit — quantifies search recall improvement (with Wilson CI)
   2. LLM vs Regex Agreement — Cohen's kappa per concept
   3. Screening Agreement — LLM vs keyword filter with kappa
   4. Human-in-the-Loop Dispute Export + Override Import
   5. Self-Consistency Check — same LLM on same papers twice at temp=0
+  6. Three-Run Consensus Check — majority-vote with temperature variation
+  7. Validation Sample Generator — stratified sample for human annotation
+  8. Human-LLM Agreement — P/R/F1 and kappa against human gold standard
 
 Note on kappa interpretation: Landis & Koch (1977) thresholds were developed
 for human-vs-human agreement. Their applicability to algorithm-vs-algorithm
@@ -31,6 +34,7 @@ import pandas as pd
 from concept_definitions import CLINICAL_CONCEPTS
 from config import (
     FIELD_NAME, LLM_CONFIDENCE_AUTO, LLM_CONFIDENCE_REVIEW,
+    CONSENSUS_RUNS, CONSENSUS_TEMPERATURES, VALIDATION_SAMPLE_SIZE,
 )
 from llm_utils import load_cache, save_cache
 
@@ -605,7 +609,671 @@ def self_consistency_check(
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 6. AUDIT SUMMARY TABLE
+# 6. THREE-RUN CONSENSUS CHECK
+# ═══════════════════════════════════════════════════════════════════════
+
+def _krippendorff_alpha_nominal(ratings_matrix: np.ndarray) -> float:
+    """
+    Compute Krippendorff's alpha for nominal data.
+
+    Args:
+        ratings_matrix: shape (n_raters, n_items) — each cell is a category label.
+                        NaN values indicate missing ratings.
+
+    Returns:
+        alpha in [-1, 1]. 1.0 = perfect agreement, 0.0 = chance level.
+
+    Reference: Krippendorff (2004). Content Analysis, 3rd ed.
+    """
+    n_raters, n_items = ratings_matrix.shape
+    if n_items < 2 or n_raters < 2:
+        return 0.0
+
+    # Collect all categories present
+    categories = set()
+    for val in ratings_matrix.flatten():
+        if not (isinstance(val, float) and np.isnan(val)):
+            categories.add(val)
+    categories = sorted(categories)
+
+    if len(categories) < 2:
+        return 1.0  # All same category → perfect agreement
+
+    # Observed disagreement (Do)
+    total_pairs = 0
+    disagreement_pairs = 0
+    for j in range(n_items):
+        col = ratings_matrix[:, j]
+        valid = [v for v in col if not (isinstance(v, float) and np.isnan(v))]
+        m = len(valid)
+        if m < 2:
+            continue
+        for a in range(m):
+            for b in range(a + 1, m):
+                total_pairs += 1
+                if valid[a] != valid[b]:
+                    disagreement_pairs += 1
+
+    if total_pairs == 0:
+        return 0.0
+
+    D_o = disagreement_pairs / total_pairs
+
+    # Expected disagreement (De) — based on marginal frequencies
+    all_values = []
+    for j in range(n_items):
+        col = ratings_matrix[:, j]
+        for v in col:
+            if not (isinstance(v, float) and np.isnan(v)):
+                all_values.append(v)
+
+    n_total = len(all_values)
+    if n_total < 2:
+        return 0.0
+
+    freq = Counter(all_values)
+    D_e = 1.0 - sum((count / n_total) ** 2 for count in freq.values())
+
+    if D_e == 0:
+        return 1.0
+
+    alpha = 1.0 - D_o / D_e
+    return round(alpha, 4)
+
+
+def consensus_check(
+    df: pd.DataFrame,
+    llm: "LLMProvider",
+    n_sample: int = 100,
+    seed: int = 42,
+    temperatures: tuple = None,
+    task: str = "screen",
+) -> dict:
+    """
+    Three-run consensus check with temperature variation.
+
+    Runs the LLM multiple times on the same papers and measures agreement
+    via majority voting. This validates reproducibility claims:
+    - Runs 1-2 at temp=0: tests API non-determinism (GPU floating-point)
+    - Run 3 at temp=0.3: tests prompt sensitivity / robustness
+
+    Args:
+        df: DataFrame with papers (needs 'title', 'abstract' columns)
+        llm: LLMProvider instance
+        n_sample: Number of papers to test
+        seed: Random seed for reproducible sampling
+        temperatures: Tuple of temperatures per run (default from config)
+        task: "screen" (only screening supported currently)
+
+    Returns:
+        dict with consensus metrics including Krippendorff's alpha
+    """
+    from llm_schemas import ScreeningResult
+
+    if temperatures is None:
+        temperatures = CONSENSUS_TEMPERATURES
+
+    n_runs = len(temperatures)
+
+    print(f"\n{'─' * 70}")
+    print(f"CONSENSUS CHECK ({n_runs}-run, n={n_sample})")
+    print(f"{'─' * 70}")
+    print(f"  Temperatures: {temperatures}")
+
+    sample = df.sample(min(n_sample, len(df)), random_state=seed)
+
+    from llm_screening import build_full_system_prompt, build_user_prompt
+    system = build_full_system_prompt()
+
+    # Store results per paper
+    all_runs = [[] for _ in range(n_runs)]
+    original_temp = llm.temperature
+    completed = 0
+
+    for i, (_, row) in enumerate(sample.iterrows()):
+        title = str(row.get("title", ""))
+        abstract = str(row.get("abstract", ""))
+        user = build_user_prompt(title, abstract)
+
+        paper_ok = True
+        paper_results = []
+        for run_idx, temp in enumerate(temperatures):
+            try:
+                llm.temperature = temp
+                result = llm.query(system=system, user=user, schema=ScreeningResult)
+                paper_results.append(result.relevant)
+            except Exception as e:
+                logger.warning(f"Error on paper {i}, run {run_idx}: {e}")
+                paper_ok = False
+                break
+
+        if paper_ok and len(paper_results) == n_runs:
+            for run_idx, val in enumerate(paper_results):
+                all_runs[run_idx].append(val)
+            completed += 1
+
+        if (i + 1) % 25 == 0:
+            print(f"  Progress: {i+1}/{len(sample)} (completed: {completed})")
+
+    # Restore original temperature
+    llm.temperature = original_temp
+
+    if completed == 0:
+        return {"n_tested": 0, "pass": False}
+
+    # Convert to arrays
+    runs = [np.array(r) for r in all_runs]
+
+    # Majority vote analysis
+    vote_matrix = np.column_stack(runs)  # shape: (n_papers, n_runs)
+    majority_votes = (vote_matrix.sum(axis=1) > n_runs / 2)
+
+    unanimous_mask = (vote_matrix.sum(axis=1) == 0) | (vote_matrix.sum(axis=1) == n_runs)
+    unanimous_pct = unanimous_mask.sum() / completed * 100
+
+    # Majority = at least ceil(n_runs/2) agree
+    majority_count = np.maximum(vote_matrix.sum(axis=1), n_runs - vote_matrix.sum(axis=1))
+    majority_mask = majority_count >= math.ceil(n_runs / 2)
+    majority_pct = majority_mask.sum() / completed * 100
+
+    # Flip rate: papers where at least one run disagrees with majority
+    flip_count = completed - unanimous_mask.sum()
+    flip_rate = flip_count / completed * 100
+
+    # Pairwise agreement between temperature groups
+    per_temp_agreement = {}
+    for a_idx in range(n_runs):
+        for b_idx in range(a_idx + 1, n_runs):
+            key = f"t{temperatures[a_idx]}_vs_t{temperatures[b_idx]}"
+            agree = np.sum(runs[a_idx] == runs[b_idx])
+            per_temp_agreement[key] = round(agree / completed * 100, 2)
+
+    # Krippendorff's alpha
+    ratings = np.array([[int(r) for r in run] for run in all_runs], dtype=float)
+    alpha = _krippendorff_alpha_nominal(ratings)
+
+    # Detailed per-paper vote breakdown for figures
+    vote_details = []
+    for j in range(completed):
+        yes_votes = int(vote_matrix[j].sum())
+        vote_details.append({
+            "paper_idx": j,
+            "yes_votes": yes_votes,
+            "no_votes": n_runs - yes_votes,
+            "unanimous": bool(unanimous_mask[j]),
+            "majority_decision": bool(majority_votes[j]),
+        })
+
+    passed = unanimous_pct >= 85  # 85% unanimous is robust
+
+    print(f"\n  Papers tested: {completed}")
+    print(f"  Unanimous ({n_runs}/{n_runs}): {unanimous_mask.sum()} ({unanimous_pct:.1f}%)")
+    print(f"  Majority vote: {majority_mask.sum()} ({majority_pct:.1f}%)")
+    print(f"  Flip rate (≥1 run disagrees): {flip_count} ({flip_rate:.1f}%)")
+    print(f"  Krippendorff's alpha: {alpha:.4f}")
+    for key, val in per_temp_agreement.items():
+        print(f"    {key}: {val:.1f}%")
+    print(f"  {'PASS' if passed else 'WARN'}: "
+          f"Unanimous rate {'≥' if unanimous_pct >= 85 else '<'}85%")
+
+    return {
+        "n_tested": completed,
+        "n_runs": n_runs,
+        "temperatures": list(temperatures),
+        "unanimous_count": int(unanimous_mask.sum()),
+        "unanimous_pct": round(unanimous_pct, 2),
+        "majority_pct": round(majority_pct, 2),
+        "flip_count": int(flip_count),
+        "flip_rate": round(flip_rate, 2),
+        "krippendorff_alpha": alpha,
+        "per_temperature_agreement": per_temp_agreement,
+        "vote_details": vote_details,
+        "pass": passed,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 7. VALIDATION SAMPLE GENERATOR (for Human Annotation)
+# ═══════════════════════════════════════════════════════════════════════
+
+VALIDATION_SAMPLE_FILE = CACHE_DIR / "validation_sample.csv"
+VALIDATION_INSTRUCTIONS_FILE = CACHE_DIR / "validation_instructions.txt"
+
+
+def generate_validation_sample(
+    df: pd.DataFrame,
+    screening_results: pd.DataFrame,
+    classification_results: pd.DataFrame = None,
+    extraction_results: pd.DataFrame = None,
+    n_total: int = None,
+    seed: int = 42,
+) -> pd.DataFrame:
+    """
+    Generate a stratified random sample for human validation.
+
+    Stratifies by LLM screening confidence quartiles and ensures each
+    major concept has at least 3 papers in the sample.
+
+    Args:
+        df: Full DataFrame with 'doi', 'title', 'abstract'
+        screening_results: LLM screening with 'doi', 'relevant', 'confidence'
+        classification_results: LLM concepts with 'doi', 'concepts', 'primary_concept'
+        extraction_results: LLM extraction with 'doi', 'study_design', 'sample_size'
+        n_total: Total sample size (default from config)
+        seed: Random seed
+
+    Returns:
+        DataFrame of sampled papers with blank human annotation columns
+    """
+    if n_total is None:
+        n_total = VALIDATION_SAMPLE_SIZE
+
+    print(f"\n{'─' * 70}")
+    print(f"GENERATING VALIDATION SAMPLE (n={n_total})")
+    print(f"{'─' * 70}")
+
+    # Merge screening results onto papers
+    merged = df[["doi", "title", "abstract"]].copy()
+    merged["doi"] = merged["doi"].astype(str)
+
+    screen_copy = screening_results[["doi", "relevant", "confidence", "reason"]].copy()
+    screen_copy["doi"] = screen_copy["doi"].astype(str)
+    screen_copy = screen_copy.rename(columns={
+        "relevant": "llm_relevant",
+        "confidence": "llm_confidence",
+        "reason": "llm_reason",
+    })
+    merged = merged.merge(screen_copy, on="doi", how="inner")
+
+    # Add classification data if available
+    if classification_results is not None:
+        class_copy = classification_results[["doi", "concepts", "primary_concept"]].copy()
+        class_copy["doi"] = class_copy["doi"].astype(str)
+        class_copy = class_copy.rename(columns={
+            "concepts": "llm_concepts",
+            "primary_concept": "llm_primary_concept",
+        })
+        merged = merged.merge(class_copy, on="doi", how="left")
+    else:
+        merged["llm_concepts"] = ""
+        merged["llm_primary_concept"] = ""
+
+    # Add extraction data if available
+    if extraction_results is not None:
+        ext_cols = ["doi"]
+        for col in ["study_design", "sample_size", "level_of_evidence"]:
+            if col in extraction_results.columns:
+                ext_cols.append(col)
+        ext_copy = extraction_results[ext_cols].copy()
+        ext_copy["doi"] = ext_copy["doi"].astype(str)
+        ext_copy = ext_copy.rename(columns={
+            "study_design": "llm_study_design",
+            "sample_size": "llm_sample_size",
+            "level_of_evidence": "llm_level_of_evidence",
+        })
+        merged = merged.merge(ext_copy, on="doi", how="left")
+    else:
+        merged["llm_study_design"] = ""
+        merged["llm_sample_size"] = ""
+
+    # Drop rows without valid confidence
+    merged = merged.dropna(subset=["llm_confidence"])
+
+    # Stratify by confidence quartiles
+    merged["confidence_quartile"] = pd.qcut(
+        merged["llm_confidence"], q=4, labels=["Q1_low", "Q2", "Q3", "Q4_high"],
+        duplicates="drop",
+    )
+
+    n_per_quartile = n_total // 4
+    remainder = n_total - n_per_quartile * 4
+
+    sampled_parts = []
+    for i, (quartile, group) in enumerate(merged.groupby("confidence_quartile", observed=True)):
+        n_take = n_per_quartile + (1 if i < remainder else 0)
+        n_take = min(n_take, len(group))
+        sampled_parts.append(group.sample(n=n_take, random_state=seed))
+
+    sample = pd.concat(sampled_parts, ignore_index=True)
+
+    # Truncate abstracts for readability
+    sample["abstract"] = sample["abstract"].fillna("").str[:500]
+
+    # Add blank columns for human annotation
+    sample["human_relevant"] = ""
+    sample["human_concepts"] = ""
+    sample["human_study_design"] = ""
+    sample["human_sample_size"] = ""
+    sample["human_notes"] = ""
+
+    # If two raters, add second rater columns
+    sample["human2_relevant"] = ""
+    sample["human2_concepts"] = ""
+    sample["adjudicated_relevant"] = ""
+    sample["adjudicated_concepts"] = ""
+
+    # Drop internal columns
+    sample = sample.drop(columns=["confidence_quartile"], errors="ignore")
+
+    # Save
+    CACHE_DIR.mkdir(exist_ok=True)
+    sample.to_csv(VALIDATION_SAMPLE_FILE, index=False)
+
+    # Write annotation instructions
+    instructions = f"""HUMAN VALIDATION INSTRUCTIONS
+==============================
+Field: {FIELD_NAME}
+Sample size: {len(sample)} papers
+Generated: {pd.Timestamp.now().isoformat()}
+
+TASK 1: RELEVANCE SCREENING
+  For each paper, fill in the 'human_relevant' column:
+    - "yes" if the paper is relevant to {FIELD_NAME}
+    - "no" if it is NOT relevant
+  Compare your decision against 'llm_relevant' and 'llm_reason'.
+
+TASK 2: CONCEPT CLASSIFICATION
+  Fill in 'human_concepts' with pipe-separated concept names from this list:
+    {', '.join(sorted(CLINICAL_CONCEPTS.keys()))}
+  Example: "REBOA|Hemorrhage Control|Damage Control"
+  If no concepts apply, leave blank.
+
+TASK 3: STUDY DESIGN (optional)
+  Fill in 'human_study_design' with one of:
+    RCT, prospective_observational, retrospective_cohort, case_control,
+    cross_sectional, systematic_review, meta_analysis, case_series,
+    case_report, narrative_review, guideline, registry_study,
+    experimental, qualitative, other
+
+TASK 4: SAMPLE SIZE (optional)
+  Fill in 'human_sample_size' with the integer sample size, or leave blank.
+
+INTER-RATER RELIABILITY
+  If a second rater is available, they should fill 'human2_relevant' and
+  'human2_concepts'. Disagreements should be resolved in 'adjudicated_relevant'
+  and 'adjudicated_concepts'.
+
+After completing annotation, run:
+  python llm_pipeline.py --compute-human-agreement
+"""
+    VALIDATION_INSTRUCTIONS_FILE.write_text(instructions)
+
+    # Summary
+    quartile_counts = sample.groupby(
+        pd.qcut(sample["llm_confidence"], q=4, labels=["Q1_low", "Q2", "Q3", "Q4_high"],
+                duplicates="drop"),
+        observed=True,
+    ).size()
+
+    print(f"  Total sampled: {len(sample)}")
+    print(f"  Confidence distribution:")
+    for q, count in quartile_counts.items():
+        print(f"    {q}: {count}")
+    print(f"  Saved to: {VALIDATION_SAMPLE_FILE}")
+    print(f"  Instructions: {VALIDATION_INSTRUCTIONS_FILE}")
+    print(f"\n  Next step: annotate the CSV, then run --compute-human-agreement")
+
+    return sample
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 8. HUMAN-LLM AGREEMENT (P/R/F1 against Gold Standard)
+# ═══════════════════════════════════════════════════════════════════════
+
+def compute_human_llm_agreement(
+    sample_path: Path = None,
+) -> dict:
+    """
+    Compute agreement between LLM predictions and human annotations.
+
+    Loads the completed validation_sample.csv (with human columns filled)
+    and computes precision, recall, F1, Cohen's kappa, sensitivity,
+    specificity for screening and classification.
+
+    Args:
+        sample_path: Path to annotated CSV (default: llm_cache/validation_sample.csv)
+
+    Returns:
+        dict with structured agreement metrics for JMIR Table 2
+    """
+    if sample_path is None:
+        sample_path = VALIDATION_SAMPLE_FILE
+
+    if not sample_path.exists():
+        print(f"  ERROR: Validation sample not found at {sample_path}")
+        print(f"  Run --generate-validation-sample first, then annotate the CSV.")
+        return {}
+
+    print(f"\n{'─' * 70}")
+    print("HUMAN-LLM AGREEMENT ANALYSIS")
+    print(f"{'─' * 70}")
+
+    df = pd.read_csv(sample_path)
+
+    results = {}
+
+    # ── Screening Agreement ──────────────────────────────────────────
+    # Use adjudicated column if available, otherwise human_relevant
+    if "adjudicated_relevant" in df.columns and df["adjudicated_relevant"].notna().any():
+        human_col = "adjudicated_relevant"
+    elif "human_relevant" in df.columns:
+        human_col = "human_relevant"
+    else:
+        print("  No human annotation columns found.")
+        return {}
+
+    screen_df = df.dropna(subset=[human_col])
+    screen_df = screen_df[screen_df[human_col].astype(str).str.strip() != ""]
+
+    if len(screen_df) == 0:
+        print("  No human screening annotations found.")
+        return {}
+
+    # Parse human decisions
+    human_rel = screen_df[human_col].astype(str).str.strip().str.lower()
+    human_bool = human_rel.isin(["yes", "true", "1", "include"])
+
+    llm_bool = screen_df["llm_relevant"].astype(bool)
+
+    # Confusion matrix
+    tp = int((human_bool & llm_bool).sum())
+    tn = int((~human_bool & ~llm_bool).sum())
+    fp = int((~human_bool & llm_bool).sum())
+    fn = int((human_bool & ~llm_bool).sum())
+    n_total = tp + tn + fp + fn
+
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+    accuracy = (tp + tn) / n_total if n_total > 0 else 0.0
+
+    kappa_screen = cohens_kappa(human_bool.values, llm_bool.values)
+
+    # Wilson CIs
+    precision_ci = wilson_ci(tp, tp + fp) if (tp + fp) > 0 else (0.0, 0.0)
+    recall_ci = wilson_ci(tp, tp + fn) if (tp + fn) > 0 else (0.0, 0.0)
+
+    results["screening"] = {
+        "n": n_total,
+        "tp": tp, "tn": tn, "fp": fp, "fn": fn,
+        "precision": round(precision, 4),
+        "precision_ci": [round(x, 4) for x in precision_ci],
+        "recall": round(recall, 4),
+        "recall_ci": [round(x, 4) for x in recall_ci],
+        "f1": round(f1, 4),
+        "specificity": round(specificity, 4),
+        "accuracy": round(accuracy, 4),
+        "kappa": kappa_screen,
+        "kappa_interpretation": kappa_interpretation(kappa_screen),
+    }
+
+    print(f"\n  SCREENING (n={n_total}):")
+    print(f"    Confusion matrix: TP={tp} TN={tn} FP={fp} FN={fn}")
+    print(f"    Precision: {precision:.3f} [{precision_ci[0]:.3f}-{precision_ci[1]:.3f}]")
+    print(f"    Recall:    {recall:.3f} [{recall_ci[0]:.3f}-{recall_ci[1]:.3f}]")
+    print(f"    F1:        {f1:.3f}")
+    print(f"    Specificity: {specificity:.3f}")
+    print(f"    Cohen's k: {kappa_screen:.3f} ({kappa_interpretation(kappa_screen)})")
+
+    # ── Classification Agreement ─────────────────────────────────────
+    if "adjudicated_concepts" in df.columns and df["adjudicated_concepts"].notna().any():
+        concept_human_col = "adjudicated_concepts"
+    elif "human_concepts" in df.columns:
+        concept_human_col = "human_concepts"
+    else:
+        concept_human_col = None
+
+    if concept_human_col:
+        concept_df = df.dropna(subset=[concept_human_col])
+        concept_df = concept_df[concept_df[concept_human_col].astype(str).str.strip() != ""]
+
+        if len(concept_df) > 0:
+            per_concept_metrics = []
+            for concept in CLINICAL_CONCEPTS:
+                human_has = concept_df[concept_human_col].astype(str).str.contains(
+                    concept, na=False, regex=False
+                )
+                llm_has = concept_df["llm_concepts"].astype(str).str.contains(
+                    concept, na=False, regex=False
+                )
+
+                c_tp = int((human_has & llm_has).sum())
+                c_fp = int((~human_has & llm_has).sum())
+                c_fn = int((human_has & ~llm_has).sum())
+
+                c_prec = c_tp / (c_tp + c_fp) if (c_tp + c_fp) > 0 else 0.0
+                c_rec = c_tp / (c_tp + c_fn) if (c_tp + c_fn) > 0 else 0.0
+                c_f1 = 2 * c_prec * c_rec / (c_prec + c_rec) if (c_prec + c_rec) > 0 else 0.0
+                c_kappa = cohens_kappa(human_has.values, llm_has.values)
+
+                support = int(human_has.sum())
+                if support > 0:  # Only report concepts with human annotations
+                    per_concept_metrics.append({
+                        "concept": concept,
+                        "precision": round(c_prec, 4),
+                        "recall": round(c_rec, 4),
+                        "f1": round(c_f1, 4),
+                        "kappa": c_kappa,
+                        "support": support,
+                    })
+
+            if per_concept_metrics:
+                macro_f1 = np.mean([m["f1"] for m in per_concept_metrics])
+                macro_kappa = np.mean([m["kappa"] for m in per_concept_metrics])
+
+                results["classification"] = {
+                    "n": len(concept_df),
+                    "macro_f1": round(macro_f1, 4),
+                    "macro_kappa": round(macro_kappa, 4),
+                    "per_concept": per_concept_metrics,
+                }
+
+                print(f"\n  CLASSIFICATION (n={len(concept_df)}):")
+                print(f"    Macro F1:    {macro_f1:.3f}")
+                print(f"    Macro kappa: {macro_kappa:.3f}")
+                print(f"    Concepts evaluated: {len(per_concept_metrics)}")
+
+                # Top/bottom 5 by F1
+                sorted_concepts = sorted(per_concept_metrics, key=lambda x: x["f1"], reverse=True)
+                print(f"    Top 5 by F1:")
+                for m in sorted_concepts[:5]:
+                    print(f"      {m['concept']:>30s}: F1={m['f1']:.3f} (n={m['support']})")
+                if len(sorted_concepts) > 5:
+                    print(f"    Bottom 5 by F1:")
+                    for m in sorted_concepts[-5:]:
+                        print(f"      {m['concept']:>30s}: F1={m['f1']:.3f} (n={m['support']})")
+
+    # ── Extraction Agreement ─────────────────────────────────────────
+    if "human_study_design" in df.columns:
+        ext_df = df.dropna(subset=["human_study_design"])
+        ext_df = ext_df[ext_df["human_study_design"].astype(str).str.strip() != ""]
+
+        if len(ext_df) > 0 and "llm_study_design" in ext_df.columns:
+            human_design = ext_df["human_study_design"].astype(str).str.strip().str.lower()
+            llm_design = ext_df["llm_study_design"].astype(str).str.strip().str.lower()
+            design_match = (human_design == llm_design).sum()
+            design_accuracy = design_match / len(ext_df)
+
+            extraction_metrics = {
+                "n": len(ext_df),
+                "study_design_accuracy": round(design_accuracy, 4),
+                "study_design_ci": [round(x, 4) for x in wilson_ci(int(design_match), len(ext_df))],
+            }
+
+            # Sample size agreement (within 10%)
+            if "human_sample_size" in ext_df.columns and "llm_sample_size" in ext_df.columns:
+                ss_df = ext_df.dropna(subset=["human_sample_size", "llm_sample_size"])
+                ss_df = ss_df[
+                    (ss_df["human_sample_size"].astype(str).str.strip() != "") &
+                    (ss_df["llm_sample_size"].astype(str).str.strip() != "")
+                ]
+                if len(ss_df) > 0:
+                    try:
+                        human_ss = pd.to_numeric(ss_df["human_sample_size"], errors="coerce")
+                        llm_ss = pd.to_numeric(ss_df["llm_sample_size"], errors="coerce")
+                        valid = human_ss.notna() & llm_ss.notna() & (human_ss > 0)
+                        if valid.sum() > 0:
+                            human_v = human_ss[valid].values
+                            llm_v = llm_ss[valid].values
+                            within_10 = np.abs(human_v - llm_v) / human_v <= 0.10
+                            extraction_metrics["sample_size_n"] = int(valid.sum())
+                            extraction_metrics["sample_size_within_10pct"] = round(
+                                within_10.sum() / len(within_10), 4
+                            )
+                            extraction_metrics["sample_size_mae"] = round(
+                                float(np.mean(np.abs(human_v - llm_v))), 2
+                            )
+                    except Exception as e:
+                        logger.warning(f"Sample size comparison failed: {e}")
+
+            results["extraction"] = extraction_metrics
+
+            print(f"\n  EXTRACTION (n={len(ext_df)}):")
+            print(f"    Study design accuracy: {design_accuracy:.3f} "
+                  f"[{extraction_metrics['study_design_ci'][0]:.3f}-"
+                  f"{extraction_metrics['study_design_ci'][1]:.3f}]")
+            if "sample_size_within_10pct" in extraction_metrics:
+                print(f"    Sample size within 10%: "
+                      f"{extraction_metrics['sample_size_within_10pct']:.3f} "
+                      f"(n={extraction_metrics['sample_size_n']})")
+                print(f"    Sample size MAE: {extraction_metrics['sample_size_mae']}")
+
+    # ── Inter-Rater Reliability ──────────────────────────────────────
+    if "human2_relevant" in df.columns:
+        irr_df = df.dropna(subset=["human_relevant", "human2_relevant"])
+        irr_df = irr_df[
+            (irr_df["human_relevant"].astype(str).str.strip() != "") &
+            (irr_df["human2_relevant"].astype(str).str.strip() != "")
+        ]
+        if len(irr_df) > 0:
+            h1 = irr_df["human_relevant"].astype(str).str.strip().str.lower().isin(
+                ["yes", "true", "1", "include"]
+            )
+            h2 = irr_df["human2_relevant"].astype(str).str.strip().str.lower().isin(
+                ["yes", "true", "1", "include"]
+            )
+            irr_kappa = cohens_kappa(h1.values, h2.values)
+            results["inter_rater"] = {
+                "n": len(irr_df),
+                "kappa": irr_kappa,
+                "interpretation": kappa_interpretation(irr_kappa),
+            }
+            print(f"\n  INTER-RATER RELIABILITY (n={len(irr_df)}):")
+            print(f"    Cohen's k: {irr_kappa:.3f} ({kappa_interpretation(irr_kappa)})")
+
+    # Save results
+    report_path = CACHE_DIR / "human_llm_agreement.json"
+    CACHE_DIR.mkdir(exist_ok=True)
+    from llm_utils import save_cache as _atomic_save
+    _atomic_save(results, report_path)
+    print(f"\n  Agreement report saved to: {report_path}")
+
+    return results
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 9. AUDIT SUMMARY TABLE
 # ═══════════════════════════════════════════════════════════════════════
 
 def print_audit_table(

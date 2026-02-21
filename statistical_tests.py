@@ -1097,6 +1097,499 @@ def print_report(results_df, cite_summary):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# FIGURES 26-30: LLM PUBLICATION FIGURES
+# ═══════════════════════════════════════════════════════════════════════
+
+def fig26_provider_comparison(comparison_results: dict = None):
+    """Fig 26: Provider comparison dashboard (2x2 grid).
+
+    Input: stats_output/provider_comparison.json
+    Panels: (A) accuracy bars, (B) cost bars, (C) latency bars, (D) agreement heatmap.
+    """
+    if comparison_results is None:
+        json_path = STATS_DIR / "provider_comparison.json"
+        if not json_path.exists():
+            print("  SKIP: Fig 26 — provider_comparison.json not found")
+            return
+        import json as _json
+        comparison_results = _json.loads(json_path.read_text())
+
+    providers_data = comparison_results.get("providers", {})
+    if not providers_data:
+        print("  SKIP: Fig 26 — no provider data")
+        return
+
+    names = list(providers_data.keys())
+    short_names = [n.split("/")[0].capitalize() for n in names]
+    color_list = [COLORS["primary"], COLORS["secondary"], COLORS["warm"], COLORS["green"]]
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle(f"Cross-Provider LLM Benchmark — {FIELD_SHORT}", fontsize=16, fontweight="bold")
+
+    # Panel A: F1 / Accuracy (if gold standard available)
+    ax = axes[0, 0]
+    f1_scores = []
+    for name in names:
+        gold = providers_data[name].get("gold_standard", {})
+        f1_scores.append(gold.get("f1", 0))
+    if any(f1 > 0 for f1 in f1_scores):
+        bars = ax.bar(short_names, f1_scores, color=color_list[:len(names)], edgecolor="white")
+        ax.set_ylabel("F1 Score")
+        ax.set_title("(A) Screening F1 vs Gold Standard")
+        ax.set_ylim(0, 1.05)
+        for bar, val in zip(bars, f1_scores):
+            if val > 0:
+                ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02,
+                        f"{val:.3f}", ha="center", fontsize=10)
+    else:
+        ax.text(0.5, 0.5, "No gold standard\navailable", ha="center", va="center",
+                transform=ax.transAxes, fontsize=12, color=COLORS["gray"])
+        ax.set_title("(A) Screening F1 vs Gold Standard")
+
+    # Panel B: Cost per 1K papers
+    ax = axes[0, 1]
+    costs = [providers_data[n].get("cost_per_1k_papers_usd", 0) for n in names]
+    bars = ax.bar(short_names, costs, color=color_list[:len(names)], edgecolor="white")
+    ax.set_ylabel("Cost per 1K Papers (USD)")
+    ax.set_title("(B) Cost Comparison")
+    for bar, val in zip(bars, costs):
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(costs)*0.02,
+                f"${val:.2f}", ha="center", fontsize=10)
+
+    # Panel C: Median latency
+    ax = axes[1, 0]
+    latencies = [providers_data[n].get("median_latency_ms", 0) for n in names]
+    bars = ax.bar(short_names, latencies, color=color_list[:len(names)], edgecolor="white")
+    ax.set_ylabel("Median Latency (ms)")
+    ax.set_title("(C) Response Latency")
+    for bar, val in zip(bars, latencies):
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(latencies)*0.02,
+                f"{val:.0f}", ha="center", fontsize=10)
+
+    # Panel D: Inter-provider agreement heatmap
+    ax = axes[1, 1]
+    agreements = comparison_results.get("inter_provider_agreement", {})
+    n = len(names)
+    matrix = np.ones((n, n))
+    for pair, metrics in agreements.items():
+        parts = pair.split("_vs_")
+        if len(parts) == 2:
+            try:
+                i = names.index(parts[0])
+                j = names.index(parts[1])
+                matrix[i, j] = metrics.get("kappa", 0)
+                matrix[j, i] = metrics.get("kappa", 0)
+            except ValueError:
+                continue
+
+    if n > 1:
+        im = ax.imshow(matrix, cmap="RdYlGn", vmin=0, vmax=1, aspect="auto")
+        ax.set_xticks(range(n))
+        ax.set_yticks(range(n))
+        ax.set_xticklabels(short_names, rotation=45, ha="right")
+        ax.set_yticklabels(short_names)
+        for i in range(n):
+            for j in range(n):
+                ax.text(j, i, f"{matrix[i,j]:.2f}", ha="center", va="center", fontsize=10)
+        fig.colorbar(im, ax=ax, label="Cohen's κ")
+    ax.set_title("(D) Inter-Provider Agreement")
+
+    plt.tight_layout()
+    fig.savefig(FIG_DIR / "26_provider_comparison.png", bbox_inches="tight")
+    plt.close(fig)
+    print(f"  ✅ Fig 26: provider comparison → {FIG_DIR / '26_provider_comparison.png'}")
+
+
+def fig27_consensus_heatmap(consensus_results: dict = None):
+    """Fig 27: Consensus heatmap (papers × runs).
+
+    Input: llm_cache/validation_report.json (consensus_check section)
+    Shows unanimous, majority, and split decisions with color coding.
+    """
+    if consensus_results is None:
+        json_path = Path(__file__).parent / "llm_cache" / "validation_report.json"
+        if not json_path.exists():
+            print("  SKIP: Fig 27 — validation_report.json not found")
+            return
+        import json as _json
+        report = _json.loads(json_path.read_text())
+        consensus_results = report.get("consensus_check", {})
+
+    vote_details = consensus_results.get("vote_details", [])
+    if not vote_details:
+        print("  SKIP: Fig 27 — no vote_details in consensus results")
+        return
+
+    n_runs = consensus_results.get("n_runs", 3)
+    temperatures = consensus_results.get("temperatures", [0.0, 0.0, 0.3])
+
+    fig, (ax_main, ax_bar) = plt.subplots(
+        1, 2, figsize=(12, max(6, len(vote_details) * 0.08)),
+        gridspec_kw={"width_ratios": [4, 1]},
+    )
+    fig.suptitle(f"Consensus Check — {n_runs}-Run Majority Vote", fontsize=14, fontweight="bold")
+
+    # Sort papers: unanimous first, then majority, then by yes_votes
+    sorted_details = sorted(vote_details, key=lambda x: (-x["unanimous"], -x["yes_votes"]))
+
+    # Build vote matrix for heatmap (1=yes, 0=no)
+    n_papers = len(sorted_details)
+    heatmap_data = np.zeros((n_papers, n_runs))
+    categories = []  # 0=unanimous, 1=majority, 2=split
+
+    for i, detail in enumerate(sorted_details):
+        yes = detail["yes_votes"]
+        no = detail["no_votes"]
+        # Reconstruct votes (yes first, then no)
+        for r in range(n_runs):
+            heatmap_data[i, r] = 1 if r < yes else 0
+
+        if detail["unanimous"]:
+            categories.append(0)
+        else:
+            categories.append(1)
+
+    # Main heatmap
+    from matplotlib.colors import ListedColormap
+    cmap = ListedColormap([COLORS["accent"], COLORS["green"]])
+    ax_main.imshow(heatmap_data, cmap=cmap, aspect="auto", interpolation="nearest")
+    ax_main.set_xlabel("Run")
+    ax_main.set_ylabel("Paper Index")
+    ax_main.set_xticks(range(n_runs))
+    ax_main.set_xticklabels([f"Run {r+1}\n(t={temperatures[r]})" for r in range(n_runs)])
+
+    # Sidebar: vote category
+    cat_colors = {0: COLORS["green"], 1: COLORS["warm"]}
+    sidebar = np.array(categories).reshape(-1, 1)
+    cat_cmap = ListedColormap([cat_colors[0], cat_colors[1]])
+    ax_bar.imshow(sidebar, cmap=cat_cmap, aspect="auto", interpolation="nearest")
+    ax_bar.set_xticks([0])
+    ax_bar.set_xticklabels(["Vote"])
+    ax_bar.set_yticks([])
+
+    # Legend
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor=COLORS["green"], label=f"Unanimous ({sum(1 for c in categories if c==0)})"),
+        Patch(facecolor=COLORS["warm"], label=f"Majority ({sum(1 for c in categories if c==1)})"),
+    ]
+    fig.legend(handles=legend_elements, loc="lower center", ncol=2, fontsize=10)
+
+    # Stats annotation
+    unanimous_pct = consensus_results.get("unanimous_pct", 0)
+    alpha = consensus_results.get("krippendorff_alpha", 0)
+    ax_main.set_title(f"Unanimous: {unanimous_pct:.1f}% | Krippendorff α: {alpha:.4f}")
+
+    plt.tight_layout()
+    fig.savefig(FIG_DIR / "27_consensus_heatmap.png", bbox_inches="tight")
+    plt.close(fig)
+    print(f"  ✅ Fig 27: consensus heatmap → {FIG_DIR / '27_consensus_heatmap.png'}")
+
+
+def fig28_cost_quality_pareto(comparison_results: dict = None):
+    """Fig 28: Cost vs Quality Pareto front.
+
+    Input: stats_output/provider_comparison.json
+    Scatter: X=cost/1K papers, Y=F1. Pareto front connecting non-dominated solutions.
+    """
+    if comparison_results is None:
+        json_path = STATS_DIR / "provider_comparison.json"
+        if not json_path.exists():
+            print("  SKIP: Fig 28 — provider_comparison.json not found")
+            return
+        import json as _json
+        comparison_results = _json.loads(json_path.read_text())
+
+    providers_data = comparison_results.get("providers", {})
+    points = []
+    for name, data in providers_data.items():
+        gold = data.get("gold_standard", {})
+        cost = data.get("cost_per_1k_papers_usd", 0)
+        f1 = gold.get("f1", 0)
+        if cost > 0:
+            points.append({"name": name, "cost": cost, "f1": f1})
+
+    if not points:
+        print("  SKIP: Fig 28 — no cost/quality data available")
+        return
+
+    fig, ax = plt.subplots(figsize=(10, 7))
+
+    color_list = [COLORS["primary"], COLORS["secondary"], COLORS["warm"],
+                  COLORS["green"], COLORS["purple"]]
+
+    for i, p in enumerate(points):
+        color = color_list[i % len(color_list)]
+        ax.scatter(p["cost"], p["f1"], s=200, c=color, edgecolors="white",
+                   linewidths=2, zorder=5)
+        short = p["name"].split("/")[0].capitalize()
+        ax.annotate(short, (p["cost"], p["f1"]),
+                    textcoords="offset points", xytext=(10, 5),
+                    fontsize=11, fontweight="bold")
+
+    # Pareto front
+    sorted_pts = sorted(points, key=lambda x: x["cost"])
+    pareto_x = []
+    pareto_y = []
+    best_f1 = -1
+    for p in sorted_pts:
+        if p["f1"] >= best_f1:
+            pareto_x.append(p["cost"])
+            pareto_y.append(p["f1"])
+            best_f1 = p["f1"]
+    if len(pareto_x) > 1:
+        ax.plot(pareto_x, pareto_y, "--", color=COLORS["accent"], alpha=0.5,
+                linewidth=2, label="Pareto front")
+        ax.legend()
+
+    ax.set_xlabel("Cost per 1,000 Papers (USD)", fontsize=12)
+    ax.set_ylabel("F1 Score (vs Gold Standard)", fontsize=12)
+    ax.set_title(f"Cost-Quality Trade-off — {FIELD_SHORT} LLM Benchmark",
+                 fontsize=14, fontweight="bold")
+    ax.set_ylim(0, 1.05)
+
+    plt.tight_layout()
+    fig.savefig(FIG_DIR / "28_cost_quality_pareto.png", bbox_inches="tight")
+    plt.close(fig)
+    print(f"  ✅ Fig 28: cost-quality Pareto → {FIG_DIR / '28_cost_quality_pareto.png'}")
+
+
+def fig29_validation_dashboard(benchmark_results: dict = None):
+    """Fig 29: Validation dashboard (3 panels).
+
+    Input: stats_output/benchmark_results.json
+    Panels: (A) screening confusion matrix, (B) per-concept F1, (C) confidence calibration.
+    """
+    if benchmark_results is None:
+        json_path = STATS_DIR / "benchmark_results.json"
+        if not json_path.exists():
+            print("  SKIP: Fig 29 — benchmark_results.json not found")
+            return
+        import json as _json
+        benchmark_results = _json.loads(json_path.read_text())
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    fig.suptitle(f"LLM Validation Dashboard — {FIELD_SHORT}", fontsize=16, fontweight="bold")
+
+    # Panel A: Confusion matrix
+    ax = axes[0]
+    screening = benchmark_results.get("screening", {})
+    cm = screening.get("confusion_matrix", {})
+    if cm:
+        matrix = np.array([[cm.get("tp", 0), cm.get("fn", 0)],
+                           [cm.get("fp", 0), cm.get("tn", 0)]])
+        im = ax.imshow(matrix, cmap="Blues", aspect="auto")
+        ax.set_xticks([0, 1])
+        ax.set_yticks([0, 1])
+        ax.set_xticklabels(["LLM: Yes", "LLM: No"])
+        ax.set_yticklabels(["Human: Yes", "Human: No"])
+        for i in range(2):
+            for j in range(2):
+                color = "white" if matrix[i, j] > matrix.max() * 0.5 else "black"
+                ax.text(j, i, str(int(matrix[i, j])), ha="center", va="center",
+                        fontsize=16, fontweight="bold", color=color)
+        f1 = screening.get("f1", 0)
+        kappa = screening.get("kappa", 0)
+        ax.set_title(f"(A) Screening\nF1={f1:.3f}, κ={kappa:.3f}")
+    else:
+        ax.text(0.5, 0.5, "No screening data", ha="center", va="center",
+                transform=ax.transAxes)
+        ax.set_title("(A) Screening")
+
+    # Panel B: Per-concept F1 bars
+    ax = axes[1]
+    classification = benchmark_results.get("classification", {})
+    per_concept = classification.get("per_concept", [])
+    if per_concept:
+        sorted_concepts = sorted(per_concept, key=lambda x: x["f1"], reverse=True)[:20]
+        names = [c["concept"][:20] for c in sorted_concepts]
+        f1s = [c["f1"] for c in sorted_concepts]
+        colors_bar = [COLORS["green"] if f > 0.7 else COLORS["warm"] if f > 0.4
+                      else COLORS["accent"] for f in f1s]
+        y_pos = range(len(names))
+        ax.barh(y_pos, f1s, color=colors_bar, edgecolor="white")
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(names, fontsize=8)
+        ax.set_xlabel("F1 Score")
+        ax.set_xlim(0, 1.05)
+        ax.invert_yaxis()
+        macro_f1 = classification.get("macro_f1", 0)
+        ax.axvline(macro_f1, color=COLORS["primary"], linestyle="--", alpha=0.7,
+                   label=f"Macro F1={macro_f1:.3f}")
+        ax.legend(fontsize=9)
+    ax.set_title("(B) Per-Concept F1")
+
+    # Panel C: Confidence calibration (if we have per-paper data)
+    ax = axes[2]
+    # Simple representation: show key metrics as a summary
+    metrics = []
+    labels = []
+    if screening:
+        metrics.extend([screening.get("precision", 0), screening.get("recall", 0),
+                       screening.get("f1", 0), screening.get("specificity", 0)])
+        labels.extend(["Precision", "Recall", "F1", "Specificity"])
+
+    if metrics:
+        colors_bar = [COLORS["primary"], COLORS["secondary"], COLORS["green"], COLORS["purple"]]
+        bars = ax.bar(labels, metrics, color=colors_bar[:len(metrics)], edgecolor="white")
+        for bar, val in zip(bars, metrics):
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02,
+                    f"{val:.3f}", ha="center", fontsize=10)
+        ax.set_ylim(0, 1.15)
+        ax.set_ylabel("Score")
+    ax.set_title("(C) Screening Metrics Summary")
+
+    plt.tight_layout()
+    fig.savefig(FIG_DIR / "29_validation_dashboard.png", bbox_inches="tight")
+    plt.close(fig)
+    print(f"  ✅ Fig 29: validation dashboard → {FIG_DIR / '29_validation_dashboard.png'}")
+
+
+def fig30_pipeline_flow(pipeline_stats: dict = None):
+    """Fig 30: Pipeline flow diagram with paper counts at each stage.
+
+    Shows: Raw corpus → Keyword Filter → LLM Screening → Final Included
+    with confidence zone breakdown (auto-accept, review, auto-reject).
+    """
+    # Try to gather stats from available files
+    if pipeline_stats is None:
+        pipeline_stats = _gather_pipeline_stats()
+
+    if not pipeline_stats:
+        print("  SKIP: Fig 30 — could not gather pipeline statistics")
+        return
+
+    fig, ax = plt.subplots(figsize=(16, 6))
+    ax.set_xlim(0, 100)
+    ax.set_ylim(0, 40)
+    ax.axis("off")
+    ax.set_title(f"LLM-Augmented Bibliometric Pipeline — {FIELD_SHORT}",
+                 fontsize=16, fontweight="bold", pad=20)
+
+    # Stage boxes
+    stages = [
+        ("Raw\nCorpus", pipeline_stats.get("raw", "?"), COLORS["gray"]),
+        ("Keyword\nFilter", pipeline_stats.get("keyword_filtered", "?"), COLORS["primary"]),
+        ("LLM\nScreening", pipeline_stats.get("llm_screened", "?"), COLORS["secondary"]),
+        ("Concept\nClassification", pipeline_stats.get("classified", "?"), COLORS["green"]),
+        ("Final\nIncluded", pipeline_stats.get("final", "?"), COLORS["accent"]),
+    ]
+
+    box_width = 14
+    box_height = 12
+    spacing = (100 - len(stages) * box_width) / (len(stages) + 1)
+
+    for i, (label, count, color) in enumerate(stages):
+        x = spacing + i * (box_width + spacing)
+        y = 14
+
+        # Draw box
+        from matplotlib.patches import FancyBboxPatch
+        box = FancyBboxPatch(
+            (x, y), box_width, box_height,
+            boxstyle="round,pad=0.5", facecolor=color, edgecolor="white",
+            linewidth=2, alpha=0.9,
+        )
+        ax.add_patch(box)
+
+        # Label
+        ax.text(x + box_width/2, y + box_height * 0.65, label,
+                ha="center", va="center", fontsize=10, fontweight="bold", color="white")
+        # Count
+        count_str = f"n={count:,}" if isinstance(count, int) else f"n={count}"
+        ax.text(x + box_width/2, y + box_height * 0.25, count_str,
+                ha="center", va="center", fontsize=9, color="white", style="italic")
+
+        # Arrow to next box
+        if i < len(stages) - 1:
+            arrow_x = x + box_width + 0.5
+            arrow_end = spacing + (i + 1) * (box_width + spacing) - 0.5
+            ax.annotate("", xy=(arrow_end, y + box_height/2),
+                        xytext=(arrow_x, y + box_height/2),
+                        arrowprops=dict(arrowstyle="->", color=COLORS["gray"],
+                                       lw=2.5))
+
+    # Exclusion annotations (below boxes)
+    excluded_keyword = pipeline_stats.get("excluded_keyword", "?")
+    excluded_llm = pipeline_stats.get("excluded_llm", "?")
+
+    if isinstance(excluded_keyword, int) or excluded_keyword != "?":
+        x_kw = spacing + 1 * (box_width + spacing) + box_width/2
+        ax.text(x_kw, 10, f"−{excluded_keyword:,}" if isinstance(excluded_keyword, int)
+                else f"−{excluded_keyword}",
+                ha="center", fontsize=9, color=COLORS["accent"], fontweight="bold")
+        ax.text(x_kw, 7, "excluded by\nkeywords", ha="center", fontsize=8,
+                color=COLORS["gray"])
+
+    if isinstance(excluded_llm, int) or excluded_llm != "?":
+        x_llm = spacing + 2 * (box_width + spacing) + box_width/2
+        ax.text(x_llm, 10, f"−{excluded_llm:,}" if isinstance(excluded_llm, int)
+                else f"−{excluded_llm}",
+                ha="center", fontsize=9, color=COLORS["accent"], fontweight="bold")
+        ax.text(x_llm, 7, "excluded by\nLLM screening", ha="center", fontsize=8,
+                color=COLORS["gray"])
+
+    plt.tight_layout()
+    fig.savefig(FIG_DIR / "30_pipeline_flow.png", bbox_inches="tight")
+    plt.close(fig)
+    print(f"  ✅ Fig 30: pipeline flow → {FIG_DIR / '30_pipeline_flow.png'}")
+
+
+def _gather_pipeline_stats() -> dict:
+    """Gather paper counts from available pipeline outputs."""
+    stats = {}
+
+    # Raw
+    raw_path = Path(__file__).parent / "results_refined" / "all_results.csv"
+    if raw_path.exists():
+        try:
+            stats["raw"] = len(pd.read_csv(raw_path))
+        except Exception:
+            pass
+
+    # Keyword filtered
+    filtered_path = Path(__file__).parent / "results_curated" / "all_filtered.csv"
+    if filtered_path.exists():
+        try:
+            n_filtered = len(pd.read_csv(filtered_path))
+            stats["keyword_filtered"] = n_filtered
+            stats["excluded_keyword"] = stats.get("raw", 0) - n_filtered
+        except Exception:
+            pass
+
+    # LLM screened
+    screening_path = Path(__file__).parent / "results_curated" / "llm_screening_results.csv"
+    if screening_path.exists():
+        try:
+            scr = pd.read_csv(screening_path)
+            n_relevant = scr["relevant"].astype(bool).sum() if "relevant" in scr.columns else 0
+            stats["llm_screened"] = int(n_relevant)
+            stats["excluded_llm"] = len(scr) - int(n_relevant)
+        except Exception:
+            pass
+
+    # Classified
+    concepts_path = Path(__file__).parent / "results_curated" / "llm_concepts.csv"
+    if concepts_path.exists():
+        try:
+            stats["classified"] = len(pd.read_csv(concepts_path))
+        except Exception:
+            pass
+
+    # Final (enriched)
+    enriched_path = Path(__file__).parent / "results_curated" / "llm_enriched.csv"
+    if enriched_path.exists():
+        try:
+            stats["final"] = len(pd.read_csv(enriched_path))
+        except Exception:
+            pass
+    elif "keyword_filtered" in stats:
+        stats["final"] = stats["keyword_filtered"]
+
+    return stats
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -1153,6 +1646,16 @@ def main():
     print("─" * 70)
     fig24_concept_cooccurrence(df)
 
+    # ── 3d. LLM publication figures (26-30) ─────────────────────────
+    print(f"\n{'─' * 70}")
+    print("LLM PUBLICATION FIGURES (26-30)...")
+    print("─" * 70)
+    fig26_provider_comparison()
+    fig27_consensus_heatmap()
+    fig28_cost_quality_pareto()
+    fig29_validation_dashboard()
+    fig30_pipeline_flow()
+
     # ── 4. Save full results ──────────────────────────────────────
     output_cols = [
         "concept", "early_count", "late_count", "total",
@@ -1173,7 +1676,7 @@ def main():
 
     print(f"\n{'=' * 70}")
     print("STATISTICAL ANALYSIS COMPLETE")
-    print(f"  Figures: 19-23 saved to {FIG_DIR}/")
+    print(f"  Figures: 19-25 + 26-30 (LLM) saved to {FIG_DIR}/")
     print(f"  Data:    {STATS_DIR / 'stats_report.csv'}")
     print(f"{'=' * 70}")
 

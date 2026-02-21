@@ -22,13 +22,113 @@ Steps:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+import time
 from pathlib import Path
 
 import pandas as pd
 
-from config import FIELD_NAME, LLM_PROVIDER, LLM_MODEL
+from config import (
+    FIELD_NAME, LLM_PROVIDER, LLM_MODEL,
+    CONSENSUS_TEMPERATURES,
+)
 from llm_utils import setup_logging
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# STEP COST TRACKER
+# ═══════════════════════════════════════════════════════════════════════
+
+class StepCostTracker:
+    """Track per-step token usage, cost, and wall time for publication reporting."""
+
+    def __init__(self, llm):
+        self.llm = llm
+        self.steps = []
+        self._snapshot = None
+
+    def start_step(self, step_name: str):
+        """Snapshot current counters before a step begins."""
+        self._snapshot = {
+            "step": step_name,
+            "start_tokens_in": self.llm.total_input_tokens,
+            "start_tokens_out": self.llm.total_output_tokens,
+            "start_calls": self.llm.total_calls,
+            "start_time": time.time(),
+        }
+
+    def end_step(self):
+        """Record deltas since start_step()."""
+        if self._snapshot is None:
+            return
+        s = self._snapshot
+        s["tokens_in"] = self.llm.total_input_tokens - s["start_tokens_in"]
+        s["tokens_out"] = self.llm.total_output_tokens - s["start_tokens_out"]
+        s["calls"] = self.llm.total_calls - s["start_calls"]
+        s["wall_time_s"] = round(time.time() - s["start_time"], 2)
+
+        # Estimate cost for this step
+        usage = self.llm.get_usage_summary()
+        total_tokens = self.llm.total_input_tokens + self.llm.total_output_tokens
+        if total_tokens > 0 and usage.get("estimated_cost_usd", 0) > 0:
+            step_tokens = s["tokens_in"] + s["tokens_out"]
+            s["cost_usd"] = round(usage["estimated_cost_usd"] * step_tokens / total_tokens, 6)
+        else:
+            s["cost_usd"] = 0.0
+
+        # Clean up internal keys before storing
+        clean = {k: v for k, v in s.items() if not k.startswith("start_")}
+        self.steps.append(clean)
+        self._snapshot = None
+
+    def get_report(self) -> dict:
+        """Return structured cost report for JSON serialization."""
+        total = {
+            "total_calls": sum(s["calls"] for s in self.steps),
+            "total_tokens_in": sum(s["tokens_in"] for s in self.steps),
+            "total_tokens_out": sum(s["tokens_out"] for s in self.steps),
+            "total_wall_time_s": round(sum(s["wall_time_s"] for s in self.steps), 2),
+            "total_cost_usd": round(sum(s["cost_usd"] for s in self.steps), 6),
+        }
+        return {"steps": self.steps, "totals": total}
+
+    def print_report(self):
+        """Pretty-print per-step cost breakdown."""
+        if not self.steps:
+            return
+
+        print(f"\n{'─' * 70}")
+        print("COST BREAKDOWN (PER STEP)")
+        print(f"{'─' * 70}")
+        print(f"  {'Step':<20s} {'Calls':>7s} {'Tokens In':>12s} {'Tokens Out':>12s} "
+              f"{'Time':>8s} {'Cost':>10s}")
+        print(f"  {'─' * 68}")
+
+        for s in self.steps:
+            time_str = f"{s['wall_time_s']:.1f}s"
+            if s["wall_time_s"] > 60:
+                time_str = f"{s['wall_time_s']/60:.1f}m"
+            print(f"  {s['step']:<20s} {s['calls']:>7,d} {s['tokens_in']:>12,d} "
+                  f"{s['tokens_out']:>12,d} {time_str:>8s} ${s['cost_usd']:>9.4f}")
+
+        report = self.get_report()
+        t = report["totals"]
+        total_time = f"{t['total_wall_time_s']:.1f}s"
+        if t["total_wall_time_s"] > 60:
+            total_time = f"{t['total_wall_time_s']/60:.1f}m"
+        print(f"  {'─' * 68}")
+        print(f"  {'TOTAL':<20s} {t['total_calls']:>7,d} {t['total_tokens_in']:>12,d} "
+              f"{t['total_tokens_out']:>12,d} {total_time:>8s} ${t['total_cost_usd']:>9.4f}")
+
+    def save_report(self, path: Path = None):
+        """Save cost report to JSON."""
+        if path is None:
+            path = Path(__file__).parent / "llm_cache" / "cost_report.json"
+        path.parent.mkdir(exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(self.get_report(), f, indent=2)
+        print(f"  Cost report saved to: {path}")
 
 # ── Paths ─────────────────────────────────────────────────────────────
 RAW_INPUT = Path(__file__).parent / "results_refined" / "all_results.csv"
@@ -73,6 +173,14 @@ def parse_args():
     parser.add_argument(
         "--skip-consistency", action="store_true",
         help="Skip self-consistency check (saves API calls)",
+    )
+    parser.add_argument(
+        "--generate-validation-sample", action="store_true",
+        help="Generate stratified validation sample for human annotation, then exit",
+    )
+    parser.add_argument(
+        "--compute-human-agreement", action="store_true",
+        help="Compute LLM vs human agreement from annotated validation sample, then exit",
     )
     return parser.parse_args()
 
@@ -141,6 +249,15 @@ def main():
     else:
         df_limited = df
 
+    # ── Handle standalone publication commands ────────────────────────
+    if args.generate_validation_sample:
+        _handle_generate_validation_sample(df_raw, df_filtered)
+        return
+
+    if args.compute_human_agreement:
+        _handle_compute_human_agreement()
+        return
+
     # ── Initialize LLM provider ──────────────────────────────────────
     from llm_providers import LLMProvider
     llm = LLMProvider(
@@ -165,6 +282,9 @@ def main():
         except (EOFError, KeyboardInterrupt):
             print("\nAborted.")
             return
+
+    # ── Initialize cost tracker ────────────────────────────────────────
+    tracker = StepCostTracker(llm)
 
     # ══════════════════════════════════════════════════════════════════
     # STEP 1: ABSTRACT RETRIEVAL
@@ -203,6 +323,7 @@ def main():
         print(f"\n{'=' * 70}")
         print("STEP 2: LLM RELEVANCE SCREENING")
         print(f"{'=' * 70}")
+        tracker.start_step("Screening")
         from llm_screening import run_screening
         # Screen ALL raw papers (not just filtered)
         screen_input = df_raw.head(args.limit) if args.limit else df_raw
@@ -211,6 +332,7 @@ def main():
         # Apply human overrides from disputes.csv if they exist
         from llm_validation import import_disputes
         screening_results = import_disputes(screening_results)
+        tracker.end_step()
 
     # ══════════════════════════════════════════════════════════════════
     # STEP 3: HIERARCHICAL CONCEPT CLASSIFICATION
@@ -220,8 +342,10 @@ def main():
         print(f"\n{'=' * 70}")
         print("STEP 3: HIERARCHICAL CONCEPT CLASSIFICATION")
         print(f"{'=' * 70}")
+        tracker.start_step("Classification")
         from llm_classification import run_classification
         classification_results = run_classification(df_limited, llm, limit=args.limit)
+        tracker.end_step()
 
     # ══════════════════════════════════════════════════════════════════
     # STEP 4: STRUCTURED DATA EXTRACTION
@@ -231,8 +355,10 @@ def main():
         print(f"\n{'=' * 70}")
         print("STEP 4: STRUCTURED DATA EXTRACTION")
         print(f"{'=' * 70}")
+        tracker.start_step("Extraction")
         from llm_extraction import run_extraction
         extraction_results = run_extraction(df_limited, llm, limit=args.limit)
+        tracker.end_step()
 
     # ══════════════════════════════════════════════════════════════════
     # STEP 5: VALIDATION
@@ -241,6 +367,7 @@ def main():
         print(f"\n{'=' * 70}")
         print("STEP 5: VALIDATION")
         print(f"{'=' * 70}")
+        tracker.start_step("Validation")
         _run_validation(
             df_raw=df_raw,
             df_filtered=df_filtered,
@@ -250,6 +377,7 @@ def main():
             llm=llm,
             skip_consistency=args.skip_consistency,
         )
+        tracker.end_step()
 
     # ══════════════════════════════════════════════════════════════════
     # MERGE & SAVE ENRICHED DATASET
@@ -267,6 +395,10 @@ def main():
     print(f"  Input tokens:   {usage['total_input_tokens']:,}")
     print(f"  Output tokens:  {usage['total_output_tokens']:,}")
     print(f"  Estimated cost: ${usage['estimated_cost_usd']:.4f}")
+
+    # Per-step cost breakdown
+    tracker.print_report()
+    tracker.save_report()
 
     print(f"\nPipeline complete!")
 
@@ -302,6 +434,37 @@ def _print_cost_estimate(llm, n_papers: int, steps: list[str]):
         print(f"  (Ollama is free — running locally)")
 
 
+def _handle_generate_validation_sample(df_raw, df_filtered):
+    """Handle --generate-validation-sample standalone command."""
+    from llm_validation import generate_validation_sample
+
+    screening_file = Path(__file__).parent / "results_curated" / "llm_screening_results.csv"
+    concepts_file = Path(__file__).parent / "results_curated" / "llm_concepts.csv"
+    extraction_file = Path(__file__).parent / "results_curated" / "llm_extracted_data.csv"
+
+    if not screening_file.exists():
+        print("ERROR: Screening results not found. Run --steps screen first.")
+        sys.exit(1)
+
+    screening = pd.read_csv(screening_file)
+    classification = pd.read_csv(concepts_file) if concepts_file.exists() else None
+    extraction = pd.read_csv(extraction_file) if extraction_file.exists() else None
+
+    df = df_filtered if df_filtered is not None else df_raw
+    generate_validation_sample(
+        df=df,
+        screening_results=screening,
+        classification_results=classification,
+        extraction_results=extraction,
+    )
+
+
+def _handle_compute_human_agreement():
+    """Handle --compute-human-agreement standalone command."""
+    from llm_validation import compute_human_llm_agreement
+    compute_human_llm_agreement()
+
+
 def _run_validation(
     df_raw, df_filtered, screening_results,
     classification_results, extraction_results,
@@ -314,6 +477,7 @@ def _run_validation(
         screening_agreement,
         export_disputes,
         self_consistency_check,
+        consensus_check,
         print_audit_table,
         save_validation_report,
     )
@@ -369,11 +533,22 @@ def _run_validation(
         concept_agree_df = concept_agreement(df_filtered, classification_results)
         report["concept_agreement_mean_kappa"] = round(concept_agree_df["kappa"].mean(), 4)
 
-    # Self-consistency (optional — costs API calls)
+    # Consensus check (3-run majority vote — replaces 2-run self-consistency)
     consistency_result = None
     if not skip_consistency and df_filtered is not None:
-        consistency_result = self_consistency_check(df_filtered, llm, n_sample=50)
-        report["self_consistency"] = consistency_result
+        consistency_result = consensus_check(
+            df_filtered, llm,
+            n_sample=50,
+            temperatures=CONSENSUS_TEMPERATURES,
+        )
+        report["consensus_check"] = consistency_result
+
+        # Also keep legacy key for backward compatibility
+        report["self_consistency"] = {
+            "n_tested": consistency_result.get("n_tested", 0),
+            "consistency_pct": consistency_result.get("unanimous_pct", 0),
+            "pass": consistency_result.get("pass", False),
+        }
 
     # Audit summary table
     print_audit_table(
