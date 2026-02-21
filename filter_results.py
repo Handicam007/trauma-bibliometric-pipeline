@@ -266,19 +266,24 @@ def load_and_filter():
     df_filtered.to_csv(OUTPUT_DIR / "all_filtered.csv", index=False)
     print(f"\nSaved {len(df_filtered)} filtered papers to all_filtered.csv")
 
-    # North America
-    na_mask = df_filtered["affiliation_country"].str.contains(
-        "United States|Canada", case=False, na=False
-    )
-    df_na = df_filtered[na_mask]
-    df_na.to_csv(OUTPUT_DIR / "north_america.csv", index=False)
-    print(f"North American: {len(df_na)}")
+    # Primary geography subset
+    from config import GEO_PRIMARY_LABEL, GEO_SECONDARY_LABEL
+    if GEO_PRIMARY_REGEX:
+        na_mask = df_filtered["affiliation_country"].str.contains(
+            GEO_PRIMARY_REGEX, case=False, na=False
+        )
+        df_na = df_filtered[na_mask]
+        df_na.to_csv(OUTPUT_DIR / "primary_geo.csv", index=False)
+        print(f"{GEO_PRIMARY_LABEL}: {len(df_na)}")
 
-    # Canadian
-    ca_mask = df_filtered["affiliation_country"].str.contains("Canada", case=False, na=False)
-    df_ca = df_filtered[ca_mask]
-    df_ca.to_csv(OUTPUT_DIR / "canadian.csv", index=False)
-    print(f"Canadian: {len(df_ca)}")
+    # Secondary geography subset
+    if GEO_SECONDARY_REGEX:
+        ca_mask = df_filtered["affiliation_country"].str.contains(
+            GEO_SECONDARY_REGEX, case=False, na=False
+        )
+        df_ca = df_filtered[ca_mask]
+        df_ca.to_csv(OUTPUT_DIR / "secondary_geo.csv", index=False)
+        print(f"{GEO_SECONDARY_LABEL}: {len(df_ca)}")
 
     # Hot topics: 2023+, >=5 cites
     df_hot = df_filtered[(df_filtered["year"] >= 2023) & (df_filtered["citations_count"] >= 5)]

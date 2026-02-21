@@ -78,7 +78,7 @@ CLINICAL_CONCEPTS = {
     "REBOA":                      r"\breboa\b|resuscitative endovascular balloon|aortic occlusion",
     "Prehospital / EMS":          r"prehospital|pre-hospital|\bems\b|paramedic|air ambulance|air medical",
     "Whole Blood / MTP":          r"whole blood|massive transfusion",
-    "Penetrating Trauma":         r"penetrating|\bstab\b|gunshot|stab wound",
+    "Penetrating Trauma":         r"penetrating.*(?:trauma|injur|wound)|(?:trauma|injur).*penetrating|\bstab\b|gunshot|stab wound",
     # Matches: artificial intelligence, machine learning, deep learning, neural network
     "AI / Machine Learning":      r"artificial intelligence|machine learning|deep learning|\bneural network\b",
     # Matches: "blunt" near trauma/injury context (prevents matching "blunt dissection technique")
@@ -166,6 +166,8 @@ TOP_CONCEPTS_FOR_CHARTS = [
     "Angioembolization",
     "TBI / Neurotrauma",
     "TEG / ROTEM",
+    "Fibrinogen / Cryo",
+    "Resuscitative Thoracotomy",
     "Fracture Management",
     "Orthopaedic Trauma",
     "Pelvic / Acetabular",
@@ -181,6 +183,8 @@ TOP_CONCEPTS_FOR_CHARTS = [
     "Vascular Injury",
     "VTE Prevention",
     "Airway / Tracheostomy",
+    "ECMO in Trauma",
+    "Mass Casualty / Disaster",
     "Firearm / Gun Violence",
     "Emergency General Surgery",
     "Tranexamic Acid (TXA)",

@@ -35,14 +35,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "bibtool" / "src"))
 
 from bibtool.search_papers import LiteratureSearch, SearchQuery
+from config import YEAR_MIN, YEAR_MAX, GEO_FILTER_SCOPUS
 
 OUTPUT_DIR = Path(__file__).parent / "results_refined"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 # ============================================================
-# NORTH AMERICA FILTER (appended to every query)
+# GEOGRAPHIC FILTER (from config.py — edit there, not here)
 # ============================================================
-NA_FILTER = ' AND (AFFILCOUNTRY(United States) OR AFFILCOUNTRY(Canada))'
+NA_FILTER = GEO_FILTER_SCOPUS or ''  # None → no filter (global search)
 
 # ============================================================
 # LAYER 1: JOURNAL-LEVEL SWEEP
@@ -59,7 +60,7 @@ QUERIES = {
         'OR SRCTITLE("European Journal of Trauma and Emergency Surgery") '
         'OR SRCTITLE("Scandinavian Journal of Trauma, Resuscitation and Emergency Medicine"))'
         + NA_FILTER,
-        min_year=2020, max_year=2026,
+        min_year=YEAR_MIN, max_year=YEAR_MAX,
     ),
 
     # 1b. General surgery journals (filtered to trauma/injury content)
@@ -79,7 +80,7 @@ QUERIES = {
         'AND TITLE-ABS-KEY(trauma OR injur* OR hemorrha* '
         'OR "acute care surgery" OR "emergency surgery")'
         + NA_FILTER,
-        min_year=2020, max_year=2026,
+        min_year=YEAR_MIN, max_year=YEAR_MAX,
     ),
 
     # 1c. Emergency medicine journals
@@ -93,7 +94,7 @@ QUERIES = {
         'OR SRCTITLE("CJEM")) '
         'AND TITLE-ABS-KEY(trauma OR injur* OR hemorrha*)'
         + NA_FILTER,
-        min_year=2020, max_year=2026,
+        min_year=YEAR_MIN, max_year=YEAR_MAX,
     ),
 
     # 1d. Critical care & resuscitation journals
@@ -108,7 +109,7 @@ QUERIES = {
         'AND TITLE-ABS-KEY(trauma OR injur* OR hemorrha* OR "damage control" '
         'OR "massive transfusion")'
         + NA_FILTER,
-        min_year=2020, max_year=2026,
+        min_year=YEAR_MIN, max_year=YEAR_MAX,
     ),
 
     # 1e. Neurotrauma, orthopaedic trauma & surgical education
@@ -120,7 +121,7 @@ QUERIES = {
         'OR SRCTITLE("Neurocritical Care")) '
         'AND TITLE-ABS-KEY(trauma OR injur*)'
         + NA_FILTER,
-        min_year=2020, max_year=2026,
+        min_year=YEAR_MIN, max_year=YEAR_MAX,
     ),
 
     # ============================================================
@@ -137,7 +138,7 @@ QUERIES = {
         'OR trial OR "systematic review" OR "meta-analysis" OR mortalit*)) '
         'AND DOCTYPE(ar OR re)'
         + NA_FILTER,
-        min_year=2020, max_year=2026,
+        min_year=YEAR_MIN, max_year=YEAR_MAX,
     ),
 
     # 2b. Broadest net — TITLE-only search
@@ -146,7 +147,7 @@ QUERIES = {
         'OR "damage control" OR "acute care" OR "emergency")) '
         'AND DOCTYPE(ar OR re)'
         + NA_FILTER,
-        min_year=2020, max_year=2026,
+        min_year=YEAR_MIN, max_year=YEAR_MAX,
     ),
 
     # ============================================================
@@ -160,7 +161,7 @@ QUERIES = {
         'TITLE-ABS-KEY(REBOA OR "resuscitative endovascular balloon" '
         'OR "ER-REBOA" OR ("aortic occlusion" AND trauma))'
         + NA_FILTER,
-        min_year=2020, max_year=2026,
+        min_year=YEAR_MIN, max_year=YEAR_MAX,
     ),
 
     # 3b. AI / Machine learning in trauma
@@ -170,7 +171,7 @@ QUERIES = {
         'OR "predictive model*" OR "clinical decision support") '
         'AND (trauma OR "emergency surgery" OR triage OR "injury severity"))'
         + NA_FILTER,
-        min_year=2020, max_year=2026,
+        min_year=YEAR_MIN, max_year=YEAR_MAX,
     ),
 
     # 3c. Novel blood products / resuscitation fluids
@@ -179,7 +180,7 @@ QUERIES = {
         'OR "freeze-dried plasma" OR "lyophilized plasma" OR "fibrinogen concentrate") '
         'AND (trauma OR hemorrha* OR "massive transfusion"))'
         + NA_FILTER,
-        min_year=2020, max_year=2026,
+        min_year=YEAR_MIN, max_year=YEAR_MAX,
     ),
 
     # 3d. ECMO in trauma (emerging)
@@ -187,7 +188,7 @@ QUERIES = {
         'TITLE-ABS-KEY((ECMO OR ECLS OR "extracorporeal membrane" '
         'OR "extracorporeal life support") AND trauma)'
         + NA_FILTER,
-        min_year=2020, max_year=2026,
+        min_year=YEAR_MIN, max_year=YEAR_MAX,
     ),
 
     # 3e. Teletrauma / telemedicine in trauma
@@ -196,7 +197,7 @@ QUERIES = {
         'OR telementoring OR "remote surgery" OR "teleguided") '
         'AND (trauma OR "emergency surgery"))'
         + NA_FILTER,
-        min_year=2020, max_year=2026,
+        min_year=YEAR_MIN, max_year=YEAR_MAX,
     ),
 
     # 3f. Mass casualty / disaster trauma
@@ -205,7 +206,7 @@ QUERIES = {
         'OR "disaster surgery" OR "active shooter" OR "bombing") '
         'AND (trauma OR triage OR surgery))'
         + NA_FILTER,
-        min_year=2020, max_year=2026,
+        min_year=YEAR_MIN, max_year=YEAR_MAX,
     ),
 
     # 3g. Trauma in top-tier general medical journals
@@ -217,7 +218,7 @@ QUERIES = {
         'AND TITLE-ABS-KEY(trauma AND (surgery OR injur* OR hemorrha* '
         'OR resuscitation OR "acute care"))'
         + NA_FILTER,
-        min_year=2020, max_year=2026,
+        min_year=YEAR_MIN, max_year=YEAR_MAX,
     ),
 }
 
@@ -268,7 +269,7 @@ def run_search():
             print(f"  -> Running total (deduplicated): {n_after} unique papers", flush=True)
 
             # Check for possible truncation (heuristic: if n_new == limit * years)
-            n_years = (query.max_year or 2026) - (query.min_year or 2020) + 1
+            n_years = (query.max_year or YEAR_MAX) - (query.min_year or YEAR_MIN) + 1
             max_possible = limit * n_years
             if n_new >= max_possible * 0.95:  # Within 5% of cap = likely truncated
                 warn_msg = (
@@ -376,7 +377,7 @@ def run_search():
     print("TOP 20 JOURNAL CLUB CANDIDATES")
     print(f"{'='*60}")
     import numpy as np
-    from config import BASE_YEAR
+    from config import BASE_YEAR  # Already imported YEAR_MIN/MAX at top
     df["score"] = (
         np.log1p(df["citations_count"]) * 10
         + (df["year"] - BASE_YEAR) * 5
@@ -395,7 +396,7 @@ def run_search():
         "database": "Scopus",
         "api_interface": "Elsevier Scopus Search API (via bibtool)",
         "geographic_filter": NA_FILTER.strip(),
-        "year_range": "2020-2026",
+        "year_range": f"{YEAR_MIN}-{YEAR_MAX}",
         "total_unique_papers": len(df),
         "total_queries": len(QUERIES),
         "queries_successful": sum(1 for q in query_metadata if q["status"] == "success"),

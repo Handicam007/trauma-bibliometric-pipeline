@@ -2,21 +2,29 @@
 ## A Complete Step-by-Step Guide
 
 This pipeline was built for **Trauma Acute Care Surgery** but is intentionally designed
-to be adapted to any medical specialty with minimal technical effort. Every
-field-specific value lives in exactly three files. Everything else is generic.
+to be adapted to any medical specialty. The core pipeline logic, validation framework,
+statistical tests, and figure generation are fully generic. You customize the field-specific
+content across a small set of files.
 
 ---
 
-## The Three-File Rule
+## Files You Need to Change
 
-| File | What you change | Time |
-|------|----------------|------|
-| `config.py` | Field name, dates, geography, scoring | 10 min |
-| `concept_definitions.py` | Clinical concepts for your specialty | 1–3 hours |
-| `search_trauma_v3_unbiased.py` | Journals and search terms for your field | 30–60 min |
+| File | What you change | Time | Required? |
+|------|----------------|------|-----------|
+| `config.py` | Field name, dates, geography, scoring | 10 min | Yes |
+| `concept_definitions.py` | Clinical concepts for your specialty | 1–3 hours | Yes |
+| `search_trauma_v3_unbiased.py` | Journals and search terms for your field | 30–60 min | Yes |
+| `filter_results.py` | Exclusion/inclusion keyword lists, journal list | 30 min | Yes |
+| `llm_schemas.py` | Sync CONCEPT_NAMES + ConceptLiteral with your concepts | 15 min | Yes |
+| `llm_screening.py` | Update screening prompt INCLUDE/EXCLUDE criteria | 15 min | Recommended |
+| `llm_classification.py` | Update domain descriptions in classification prompt | 10 min | Recommended |
+| `llm_extraction.py` | Update few-shot examples for your field | 10 min | Optional |
 
-**Everything else** (pipeline logic, validation, statistics, figures, LLM prompts)
-runs unchanged.
+**Pipeline logic, validation, statistics, and figures run unchanged.**
+The LLM prompt files (screening, classification, extraction) import `FIELD_NAME` from
+config automatically, but their detailed criteria and examples are trauma-specific and
+should be reviewed for your field.
 
 ---
 

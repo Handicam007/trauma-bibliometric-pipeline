@@ -119,6 +119,33 @@ def check_regexes():
         warn("Cannot import llm_schemas.CONCEPT_NAMES",
              "LLM schema concept sync cannot be verified")
 
+    # 1f. Check llm_schemas.py DOMAIN_NAMES matches DOMAIN_GROUPS keys
+    try:
+        from llm_schemas import DOMAIN_NAMES
+        domain_schema_set = set(DOMAIN_NAMES)
+        domain_def_set = set(DOMAIN_GROUPS.keys())
+
+        missing_domains = domain_def_set - domain_schema_set
+        if missing_domains:
+            for d in sorted(missing_domains):
+                check(f"llm_schemas.DOMAIN_NAMES includes '{d}'", False,
+                      "Add this domain to DOMAIN_NAMES and DomainLiteral in llm_schemas.py")
+
+        extra_domains = domain_schema_set - domain_def_set
+        if extra_domains:
+            for d in sorted(extra_domains):
+                check(f"llm_schemas.DOMAIN_NAMES -> '{d}' exists in DOMAIN_GROUPS", False,
+                      "Remove this domain from DOMAIN_NAMES and DomainLiteral in llm_schemas.py")
+
+        if not missing_domains and not extra_domains:
+            check(f"llm_schemas.DOMAIN_NAMES matches DOMAIN_GROUPS ({len(domain_def_set)} domains)", True)
+    except ImportError:
+        warn("Cannot import llm_schemas.DOMAIN_NAMES",
+             "LLM schema domain sync cannot be verified")
+    except AttributeError:
+        warn("llm_schemas.DOMAIN_NAMES not defined",
+             "Consider adding DOMAIN_NAMES list to llm_schemas.py")
+
 
 # ═══════════════════════════════════════════════════════════════════
 # CHECK 2: KEYWORD LISTS IN filter_results.py

@@ -121,7 +121,7 @@ python llm_pipeline.py --provider openai --steps extract
 
 ### Step 6: Run All Steps Together (after testing individually)
 ```bash
-python llm_pipeline.py --provider openai --steps screen classify extract
+python llm_pipeline.py --provider openai --steps screen,classify,extract
 ```
 
 ### Step 7: Generate Figures

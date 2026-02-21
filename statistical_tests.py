@@ -43,7 +43,9 @@ from config import (
     GEO_PRIMARY_LABEL, FIG_DIR_NAME,
 )
 
-warnings.filterwarnings("ignore")
+# Suppress only matplotlib/font warnings — preserve scipy statistical diagnostics
+warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 # ── Paths ────────────────────────────────────────────────────────────
 INPUT = Path(__file__).parent / "results_curated" / "all_filtered.csv"
@@ -240,7 +242,8 @@ def run_trend_analysis(df):
         n_excluded_partial = len(df[df["year"] > YEAR_STATS_MAX])
         print(f"  ⚠ {YEAR_MAX} excluded from inference ({n_excluded_partial:,} papers, partial year)")
     print(f"  Total concepts tested: {len(CLINICAL_CONCEPTS)}")
-    print(f"  Significance threshold: α = 0.05 (BH-corrected for {len(CLINICAL_CONCEPTS)} tests)\n")
+    print(f"  Tests per concept: 2 (chi-squared/Fisher + Cochran-Armitage)")
+    print(f"  Significance threshold: α = 0.05 (BH-corrected across {len(CLINICAL_CONCEPTS) * 2} tests)\n")
 
     results = []
 

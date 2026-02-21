@@ -224,7 +224,7 @@ def main():
     # ── Load data ─────────────────────────────────────────────────────
     if not RAW_INPUT.exists():
         print(f"ERROR: Raw results not found: {RAW_INPUT}")
-        print("Run search_trauma_v3_unbiased.py first.")
+        print("Run the search script first (e.g., search_trauma_v3_unbiased.py).")
         sys.exit(1)
 
     df_raw = pd.read_csv(RAW_INPUT)
@@ -571,7 +571,13 @@ def _merge_results(df, classification_results, extraction_results, screening_res
     print(f"{'─' * 70}")
 
     enriched = df.copy()
-    enriched["doi"] = enriched["doi"].astype(str)
+    # Replace empty/NaN DOIs with unique placeholders to prevent false dedup matches
+    enriched["doi"] = enriched["doi"].fillna("").astype(str)
+    missing_doi = enriched["doi"].isin(["", "nan", "None"])
+    if missing_doi.any():
+        enriched.loc[missing_doi, "doi"] = [
+            f"__NO_DOI_{i}" for i in range(missing_doi.sum())
+        ]
 
     # Remove any previously merged LLM columns to prevent _x/_y duplicates
     llm_cols = [c for c in enriched.columns if c.startswith("llm_")]
