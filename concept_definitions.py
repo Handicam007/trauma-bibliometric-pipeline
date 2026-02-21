@@ -7,6 +7,23 @@ Each pattern is designed for case-insensitive matching against paper titles.
 v3 — tightened all regexes after audit found overcounting.
      Every pattern reviewed against sample matches for specificity.
 
+──────────────────────────────────────────────────────────────────────
+ADAPTING TO A NEW MEDICAL FIELD
+──────────────────────────────────────────────────────────────────────
+This file contains Trauma-specific concepts. To adapt for a new field:
+
+  1. Replace CLINICAL_CONCEPTS with your field's concepts (~15-50 entries)
+  2. Update TOP_CONCEPTS_FOR_CHARTS to the same list in display order
+  3. Update DOMAIN_GROUPS to reflect your field's natural topic clusters
+  4. Run: python validate.py   (checks everything is consistent)
+
+See FIELD_GUIDE.md for ready-to-use concept sets for:
+  - Interventional Cardiology
+  - Surgical Oncology
+  - Neurosurgery
+  - Emergency Medicine
+──────────────────────────────────────────────────────────────────────
+
 HOW TO EDIT THIS FILE
 =====================
 - Run `python validate.py` AFTER every edit to catch mistakes.

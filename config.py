@@ -4,6 +4,44 @@ FIELD-SPECIFIC CONFIGURATION
 This is the ONLY file you need to edit when adapting this pipeline to a new field.
 Every other script imports from here. No hardcoded values elsewhere.
 
+See FIELD_GUIDE.md for a complete step-by-step adaptation guide with concept
+examples for Cardiology, Oncology, Neurosurgery, and Emergency Medicine.
+
+──────────────────────────────────────────────────────────────────────
+QUICK-START PRESETS  (uncomment one block, comment out the active one)
+──────────────────────────────────────────────────────────────────────
+
+TRAUMA ACUTE CARE SURGERY (current / active)
+  FIELD_NAME = "Trauma Acute Care Surgery"
+  FIELD_SHORT = "Trauma"
+  JOURNAL_HIGHLIGHT_KEYWORDS = ["trauma", "emergency", "injury"]
+  WORDCLOUD_STOPWORDS = ["trauma", "injury", "surgery", "patient", ...]
+
+INTERVENTIONAL CARDIOLOGY
+  FIELD_NAME = "Interventional Cardiology"
+  FIELD_SHORT = "Cardiology"
+  JOURNAL_HIGHLIGHT_KEYWORDS = ["cardiology", "cardiac", "heart", "circulation"]
+  WORDCLOUD_STOPWORDS = ["cardiac", "heart", "cardiology", "coronary", "patient", ...]
+
+SURGICAL ONCOLOGY
+  FIELD_NAME = "Surgical Oncology"
+  FIELD_SHORT = "Oncology"
+  JOURNAL_HIGHLIGHT_KEYWORDS = ["oncology", "cancer", "surgical oncology"]
+  WORDCLOUD_STOPWORDS = ["cancer", "tumor", "oncology", "treatment", "patient", ...]
+
+EMERGENCY MEDICINE
+  FIELD_NAME = "Emergency Medicine"
+  FIELD_SHORT = "EM"
+  JOURNAL_HIGHLIGHT_KEYWORDS = ["emergency", "acute", "resuscitation"]
+  WORDCLOUD_STOPWORDS = ["emergency", "patient", "department", "clinical", ...]
+
+NEUROSURGERY
+  FIELD_NAME = "Neurosurgery"
+  FIELD_SHORT = "Neurosurg"
+  JOURNAL_HIGHLIGHT_KEYWORDS = ["neurosurgery", "neurosurgical", "spine", "neuro"]
+  WORDCLOUD_STOPWORDS = ["neurosurgery", "brain", "spinal", "surgery", "patient", ...]
+──────────────────────────────────────────────────────────────────────
+
 Current field: Trauma Acute Care Surgery (US + Canada, 2020-2026)
 """
 
