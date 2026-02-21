@@ -587,6 +587,7 @@ def _merge_results(df, classification_results, extraction_results, screening_res
         # Prefix columns to avoid collisions
         rename = {c: f"llm_{c}" for c in cls_df.columns if c != "doi"}
         cls_df = cls_df.rename(columns=rename)
+        cls_df = cls_df.drop_duplicates(subset=["doi"], keep="last")  # Guard against DOI dupes
         enriched = enriched.merge(cls_df, on="doi", how="left")
 
     # Merge extraction
@@ -598,6 +599,7 @@ def _merge_results(df, classification_results, extraction_results, screening_res
         ext_df["doi"] = ext_df["doi"].astype(str)
         rename = {c: f"llm_{c}" for c in ext_df.columns if c != "doi"}
         ext_df = ext_df.rename(columns=rename)
+        ext_df = ext_df.drop_duplicates(subset=["doi"], keep="last")  # Guard against DOI dupes
         enriched = enriched.merge(ext_df, on="doi", how="left")
 
     # Merge screening
@@ -607,6 +609,7 @@ def _merge_results(df, classification_results, extraction_results, screening_res
         scr_df["doi"] = scr_df["doi"].astype(str)
         rename = {c: f"llm_screen_{c}" for c in scr_df.columns if c != "doi"}
         scr_df = scr_df.rename(columns=rename)
+        scr_df = scr_df.drop_duplicates(subset=["doi"], keep="last")  # Guard against DOI dupes
         enriched = enriched.merge(scr_df, on="doi", how="left")
 
     # Save

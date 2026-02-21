@@ -122,7 +122,9 @@ EXCLUDE_TITLE_KEYWORDS = [
     "chronic obstructive", "asthma", "copd",
     "diabetes mellitus", "insulin resistance",
     "multiple sclerosis", "amyotrophic lateral",
-    "cardiac arrest",  # not trauma-specific
+    # NOTE: "cardiac arrest" was removed from exclusions per expert review.
+    # Traumatic cardiac arrest (TCA) is a core AAST/EAST topic. LLM screening
+    # now handles non-traumatic cardiac arrest exclusion more accurately.
 ]
 
 EXCLUDE_ABSTRACT_KEYWORDS = [
@@ -174,10 +176,21 @@ REQUIRE_ANY_KEYWORD = [
     "combat casualty", "tactical", "ECMO", "ECLS",
     # Telemedicine
     "telemedicine", "teletrauma", "telementoring",
+    # Pharmacological interventions
+    "tranexamic", "TXA",
     # Miscellaneous trauma-relevant
     "wound", "shock", "tourniquet", "hemostatic", "critical care",
     "ICU", "intensive care", "mortality", "survival",
     "emergency general surg", "acute appendicitis",
+    "cardiac arrest",  # traumatic cardiac arrest is core trauma
+    # BCVI / vascular
+    "BCVI", "blunt cerebrovascular", "carotid injur", "vertebral injur",
+    # Registries
+    "NTDB", "national trauma data",
+    # Burns
+    "burn injur", "burn care", "thermal injur",
+    # Abdominal
+    "hollow viscus", "mesenteric", "compartment syndrome",
 ]
 
 

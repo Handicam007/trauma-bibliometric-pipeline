@@ -26,6 +26,16 @@ CACHE_DIR = Path(__file__).parent / LLM_CACHE_DIR
 # SAFE DOI KEY — Prevents NaN collision bug
 # ═══════════════════════════════════════════════════════════════════════
 
+def prompt_hash(prompt_text: str) -> str:
+    """Generate a short hash of a prompt for cache-key incorporation.
+
+    When this hash changes (because the prompt was edited), cache keys
+    using it will no longer match, forcing re-processing. This prevents
+    stale cached results from an old prompt being mixed with new results.
+    """
+    return hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()[:8]
+
+
 def safe_doi_key(doi_value, title: str = "") -> str:
     """
     Generate a safe cache key from a DOI, falling back to a title hash.

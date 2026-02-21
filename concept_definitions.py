@@ -44,7 +44,7 @@ CLINICAL_CONCEPTS = {
     # Matches: geriatric, frailty, elderly, older adult
     "Geriatric / Frailty":        r"geriatric|frailty|\belderly\b|older adult",
     # Matches: trauma system, trauma centre, TQIP, trauma quality
-    "Trauma Systems / QI":        r"trauma system|trauma cent|trauma network|\btqip\b|trauma quality",
+    "Trauma Systems / QI":        r"trauma system|trauma cent|trauma network|\btqip\b|trauma quality|\bntdb\b|national trauma data",
     # Matches: hemorrhage, haemorrhage, hemostatic, tourniquet
     "Hemorrhage Control":         r"hemorrha|haemorrha|hemostatic|hemorrhage control|tourniquet",
     # Matches: "pediatric" near trauma-related words (either order), or "child/children" near trauma words
@@ -90,8 +90,8 @@ CLINICAL_CONCEPTS = {
     "Polytrauma":                 r"polytrauma|multiple trauma|multiply injured",
     "Spinal Cord Injury":         r"spinal cord injur|cervical spine injur|spine fracture|spinal trauma|spinal injur",
     "Thoracic Trauma":            r"chest trauma|pneumothorax|hemothorax|thoracic trauma|thoracic injur",
-    "Abdominal Trauma":           r"abdominal trauma|abdominal injur|bowel injur|\blaparotomy\b.*trauma|trauma.*\blaparotomy\b",
-    "Vascular Injury":            r"vascular injur|arterial injur|venous injur|vascular trauma",
+    "Abdominal Trauma":           r"abdominal trauma|abdominal injur|bowel injur|hollow viscus|mesenteric injur|duodenal injur|\blaparotomy\b.*trauma|trauma.*\blaparotomy\b",
+    "Vascular Injury":            r"vascular injur|arterial injur|venous injur|vascular trauma|\bbcvi\b|blunt cerebrovascular|carotid.*injur|vertebral.*injur",
     "Teletrauma / Remote":        r"teletrauma|tele.?trauma|telemedicine.*trauma|trauma.*telemedicine|rural trauma|telementoring",
     # Matches: COVID-19, or COVID near trauma/surgery/pandemic context
     "COVID-19 Impact": (
@@ -110,6 +110,20 @@ CLINICAL_CONCEPTS = {
     "ECMO in Trauma":             r"(?:ecmo|ecls|extracorporeal membrane|extracorporeal life support).*trauma|trauma.*(?:ecmo|ecls|extracorporeal membrane|extracorporeal life support)",
     "Mass Casualty / Disaster":   r"mass casualty|mass shooting|blast injur|\bmci\b|active shooter",
     "Firearm / Gun Violence":     r"firearm|gun violence|gunshot wound|shooting victim|bullet",
+
+    # --- New concepts (added per expert panel review) ---
+
+    # Matches: emergency general surgery, acute care surgery, acute appendicitis,
+    # acute cholecystitis, small bowel obstruction, incarcerated hernia
+    "Emergency General Surgery": (
+        r"emergency general surg|\begs\b.*surg|acute care surg"
+        r"|acute appendicitis|acute cholecystitis"
+        r"|small bowel obstruction|incarcerated hernia|perforated"
+    ),
+    # Matches: tranexamic acid, TXA (word boundary), CRASH-2/3, STAAMP
+    "Tranexamic Acid (TXA)":      r"tranexamic|\btxa\b|\bcrash.2\b|\bcrash.3\b|\bstaamp\b",
+    # Matches: burn near injury/care/trauma context, or specific burn terms
+    "Burn Injury":                r"burn injur|burn care|burn cent|\btbsa\b|burn trauma|burn patient|burn surg|burn unit|thermal injur",
 }
 
 # ── CONCEPTS FOR CHARTS ─────────────────────────────────────────────
@@ -151,6 +165,9 @@ TOP_CONCEPTS_FOR_CHARTS = [
     "VTE Prevention",
     "Airway / Tracheostomy",
     "Firearm / Gun Violence",
+    "Emergency General Surgery",
+    "Tranexamic Acid (TXA)",
+    "Burn Injury",
 ]
 
 # ── DOMAIN GROUPINGS (for subplot grid) ─────────────────────────────
@@ -158,7 +175,7 @@ DOMAIN_GROUPS = {
     "Resuscitation & Blood Products": [
         "Damage Control", "Whole Blood / MTP",
         "TEG / ROTEM", "Coagulopathy (TIC)", "Fibrinogen / Cryo",
-        "Hemorrhage Control",
+        "Hemorrhage Control", "Tranexamic Acid (TXA)",
     ],
     "Surgical Techniques & Approaches": [
         "REBOA", "Non-Operative Mgmt", "Angioembolization",
@@ -182,6 +199,6 @@ DOMAIN_GROUPS = {
     ],
     "Other Emerging Topics": [
         "COVID-19 Impact", "VTE Prevention", "Airway / Tracheostomy",
-        "Firearm / Gun Violence",
+        "Firearm / Gun Violence", "Emergency General Surgery", "Burn Injury",
     ],
 }

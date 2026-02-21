@@ -34,20 +34,35 @@ logger = logging.getLogger("llm_pipeline.providers")
 
 
 # ── Default models per provider ──────────────────────────────────────
+# IMPORTANT: Use pinned snapshot versions, not aliases, for reproducibility.
+# Aliases (e.g., "gpt-4o-mini") silently change as providers update models.
+# Update these versions when intentionally upgrading. Last updated: 2025-02.
 DEFAULT_MODELS = {
-    "openai": "gpt-4o-mini",
-    "anthropic": "claude-3-5-haiku-latest",
+    "openai": "gpt-4o-mini-2024-07-18",
+    "anthropic": "claude-3-5-haiku-20241022",
     "google": "gemini-2.0-flash",
     "ollama": "llama3.2",
 }
 
 # ── Approximate costs per 1M tokens (input, output) ──────────────────
 # Used for cost estimation only — not billed through this code.
+# Prices as of 2025-02. Update when models or pricing change.
 COST_PER_1M_TOKENS = {
-    "openai": {"gpt-4o-mini": (0.15, 0.60), "gpt-4o": (2.50, 10.0)},
-    "anthropic": {"claude-3-5-haiku-latest": (0.80, 4.00), "claude-sonnet-4-20250514": (3.00, 15.0)},
-    "google": {"gemini-2.0-flash": (0.075, 0.30), "gemini-2.5-pro-preview-06-05": (1.25, 10.0)},
-    "ollama": {},  # Free
+    "openai": {
+        "gpt-4o-mini-2024-07-18": (0.15, 0.60),
+        "gpt-4o-mini": (0.15, 0.60),
+        "gpt-4o": (2.50, 10.0),
+    },
+    "anthropic": {
+        "claude-3-5-haiku-20241022": (0.80, 4.00),
+        "claude-3-5-haiku-latest": (0.80, 4.00),
+        "claude-sonnet-4-20250514": (3.00, 15.0),
+    },
+    "google": {
+        "gemini-2.0-flash": (0.075, 0.30),
+        "gemini-2.5-pro-preview-06-05": (1.25, 10.0),
+    },
+    "ollama": {},  # Free (local compute costs not tracked)
 }
 
 # ── Rate limit retry config ──────────────────────────────────────────

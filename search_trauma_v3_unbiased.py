@@ -224,7 +224,7 @@ QUERIES = {
 # Per-query limits (papers per year)
 QUERY_LIMITS = {
     # Layer 1: Journal sweeps (high limits — these are the unbiased foundation)
-    "L1_trauma_journals":     200,
+    "L1_trauma_journals":     500,  # Raised from 200: JTACS+Injury alone > 700/yr
     "L1_general_surgery":     150,
     "L1_emergency_med":       100,
     "L1_critical_care":       100,

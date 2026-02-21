@@ -54,7 +54,7 @@ STATS_DIR.mkdir(exist_ok=True)
 
 # ── Style (matches analysis.py) ─────────────────────────────────────
 plt.rcParams.update({
-    "figure.dpi": 200, "savefig.dpi": 200,
+    "figure.dpi": 300, "savefig.dpi": 300,  # JMIR requires 300 DPI for production
     "font.family": "sans-serif",
     "font.sans-serif": ["Helvetica Neue", "Arial", "DejaVu Sans"],
     "axes.titlesize": 14, "axes.labelsize": 12,
@@ -63,9 +63,10 @@ plt.rcParams.update({
     "axes.edgecolor": "#333333", "axes.grid": True, "grid.alpha": 0.3,
 })
 
+# Colorblind-safe palette: replaced red/green with blue/orange accessible alternatives
 COLORS = {
-    "primary": "#1B4F72", "secondary": "#2E86C1", "accent": "#E74C3C",
-    "warm": "#E67E22", "green": "#27AE60", "purple": "#8E44AD", "gray": "#7F8C8D",
+    "primary": "#1B4F72", "secondary": "#2E86C1", "accent": "#D35400",
+    "warm": "#E67E22", "green": "#2980B9", "purple": "#8E44AD", "gray": "#7F8C8D",
 }
 
 
@@ -692,10 +693,10 @@ def fig21_citation_rate(df, cite_summary):
     axes[1].set_xticks(years)
     axes[1].set_xticklabels([str(y) for y in years])
 
-    # Annotate 2026 as partial
-    if 2026 in years:
-        axes[1].axvspan(2025.5, 2026.5, alpha=0.1, color="orange")
-        axes[1].text(2026, axes[1].get_ylim()[1] * 0.9, "partial\nyear",
+    # Annotate partial year (uses config instead of hardcoded 2026)
+    if YEAR_MAX in years:
+        axes[1].axvspan(YEAR_MAX - 0.5, YEAR_MAX + 0.5, alpha=0.1, color="orange")
+        axes[1].text(YEAR_MAX, axes[1].get_ylim()[1] * 0.9, "partial\nyear",
                       ha="center", fontsize=8, alpha=0.6)
 
     fig.suptitle(

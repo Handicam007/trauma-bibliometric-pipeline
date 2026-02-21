@@ -125,6 +125,9 @@ CONCEPT_NAMES = [
     "ECMO in Trauma",
     "Mass Casualty / Disaster",
     "Firearm / Gun Violence",
+    "Emergency General Surgery",
+    "Tranexamic Acid (TXA)",
+    "Burn Injury",
 ]
 
 ConceptLiteral = Literal[
@@ -169,6 +172,9 @@ ConceptLiteral = Literal[
     "ECMO in Trauma",
     "Mass Casualty / Disaster",
     "Firearm / Gun Violence",
+    "Emergency General Surgery",
+    "Tranexamic Acid (TXA)",
+    "Burn Injury",
 ]
 
 

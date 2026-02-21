@@ -409,14 +409,29 @@ def generate_prisma_traice_checklist(
         "ai_specific": True,
     })
 
-    # ── 15-20: STANDARD PRISMA ITEMS (manual) ────────────────────────
+    # ── 15-27: STANDARD PRISMA 2020 ITEMS ────────────────────────────
+    # Full PRISMA 2020 checklist (Page et al., BMJ 2021;372:n71).
+    # Items 1-14 above are AI-specific extensions. Items 15-27 map to
+    # the remaining standard PRISMA 2020 sections.
     manual_items = [
-        (15, "Study Selection", "Process of selecting studies (with AI role)"),
-        (16, "Data Collection", "How data were extracted (automated + manual)"),
-        (17, "Risk of Bias", "Risk of bias assessment in included studies"),
-        (18, "Synthesis Methods", "Methods for combining results"),
-        (19, "Funding", "Sources of funding and conflicts of interest"),
-        (20, "Data Availability", "Code, data, prompts deposited in repository"),
+        (15, "Abstract", "Structured summary (background, objectives, methods, results, conclusions)"),
+        (16, "Rationale", "Rationale for the review in context of existing knowledge"),
+        (17, "Objectives", "Explicit statement of the review question(s) with PICO elements"),
+        (18, "Protocol & Registration", "Protocol registration number (e.g., PROSPERO) and deviations"),
+        (19, "Study Selection", "Process of selecting studies with AI screening role described"),
+        (20, "Data Collection", "How data were extracted (automated LLM + manual verification)"),
+        (21, "Study Risk of Bias", "Risk of bias assessment in individual included studies"),
+        (22, "Effect Measures", "Specify effect measures used (OR, RR, etc.)"),
+        (23, "Synthesis Methods", "Methods for combining and presenting results"),
+        (24, "Reporting Bias", "Methods for assessing risk of reporting bias across studies"),
+        (25, "Certainty of Evidence", "Methods for assessing certainty of evidence (e.g., GRADE)"),
+        (26, "Results of Syntheses", "Present results for each synthesis performed"),
+        (27, "Discussion / Limitations",
+         "Limitations of evidence, review process, and LLM-specific caveats "
+         "(single-database, geographic filter, English-language bias, model non-determinism, "
+         "COVID-19 temporal confounding)"),
+        (28, "Funding", "Sources of funding and conflicts of interest"),
+        (29, "Data Availability", "Code, data, and prompts deposited in persistent repository with DOI"),
     ]
     for num, section, item in manual_items:
         checklist["items"].append({

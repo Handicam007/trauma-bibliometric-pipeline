@@ -1,13 +1,14 @@
 # Trauma Bibliometric Analysis Pipeline — Pinned Dependencies
 # =============================================================
-# Generated: 2026-02-20
+# Generated: 2025-02
 # Python: 3.12+
 #
 # Install: pip install -r requirements.txt
 # Then:    python -m spacy download en_core_web_sm
 #
-# For exact reproducibility, use these pinned versions.
-# For compatibility with newer releases, loosen the pins (e.g., pandas>=2.0).
+# For exact reproducibility (JMIR Methods requirement), use these
+# pinned versions. For compatibility with newer releases, loosen
+# the pins (e.g., pandas>=2.0).
 
 # ── Core data science ────────────────────────────────────────
 pandas==2.3.3
@@ -27,10 +28,14 @@ pydantic==2.8.2
 # ── HTTP / API access ───────────────────────────────────────
 requests==2.32.5
 
+# ── Scopus / PubMed search ──────────────────────────────────
+pybliometrics>=3.5,<4.0
+biopython>=1.83,<2.0        # For PubMed E-utilities
+
 # ── LLM providers (install only what you need) ──────────────
-# At least ONE of these is required for the LLM pipeline.
+# At least ONE is required for the LLM pipeline.
 # Ollama is free and runs locally (no API key needed).
-openai==1.40.2                   # OpenAI GPT-4o-mini (default)
-anthropic==0.34.1                # Anthropic Claude 3.5 Haiku
+openai==1.40.2                   # OpenAI GPT-4o-mini-2024-07-18
+anthropic==0.34.1                # Anthropic Claude 3.5 Haiku 20241022
 google-generativeai==0.8.6       # Google Gemini 2.0 Flash
 # Ollama: install from https://ollama.com (no pip package needed)

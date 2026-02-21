@@ -87,6 +87,50 @@ def cohens_kappa(y1: np.ndarray, y2: np.ndarray) -> float:
     return round(kappa, 4)
 
 
+def kappa_se(y1: np.ndarray, y2: np.ndarray, kappa_value: float) -> float:
+    """
+    Approximate standard error of Cohen's kappa.
+
+    Uses the large-sample formula from Fleiss et al. (2003). Returns SE
+    that can be used to construct 95% CI: kappa +/- 1.96 * SE.
+    """
+    y1, y2 = np.asarray(y1, dtype=bool), np.asarray(y2, dtype=bool)
+    n = len(y1)
+    if n == 0:
+        return 0.0
+
+    p_o = np.sum(y1 == y2) / n
+    p_yes_1 = np.sum(y1) / n
+    p_yes_2 = np.sum(y2) / n
+    p_e = p_yes_1 * p_yes_2 + (1 - p_yes_1) * (1 - p_yes_2)
+
+    if p_e == 1.0:
+        return 0.0
+
+    # Fleiss et al. (2003) large-sample SE under H0: kappa = observed
+    se = math.sqrt(p_o * (1 - p_o) / (n * (1 - p_e) ** 2))
+    return round(se, 6)
+
+
+def kappa_with_ci(y1: np.ndarray, y2: np.ndarray, z: float = 1.96) -> dict:
+    """
+    Compute Cohen's kappa with 95% confidence interval.
+
+    Returns dict with kappa, se, ci_lower, ci_upper, interpretation.
+    """
+    k = cohens_kappa(y1, y2)
+    se = kappa_se(y1, y2, k)
+    ci_lower = max(-1.0, round(k - z * se, 4))
+    ci_upper = min(1.0, round(k + z * se, 4))
+    return {
+        "kappa": k,
+        "se": se,
+        "ci_lower": ci_lower,
+        "ci_upper": ci_upper,
+        "interpretation": kappa_interpretation(k),
+    }
+
+
 def kappa_interpretation(k: float) -> str:
     """Human-readable interpretation of Cohen's kappa (Landis & Koch, 1977)."""
     if k >= 0.81:
@@ -730,33 +774,34 @@ def consensus_check(
     original_temp = llm.temperature
     completed = 0
 
-    for i, (_, row) in enumerate(sample.iterrows()):
-        title = str(row.get("title", ""))
-        abstract = str(row.get("abstract", ""))
-        user = build_user_prompt(title, abstract)
+    try:
+        for i, (_, row) in enumerate(sample.iterrows()):
+            title = str(row.get("title", ""))
+            abstract = str(row.get("abstract", ""))
+            user = build_user_prompt(title, abstract)
 
-        paper_ok = True
-        paper_results = []
-        for run_idx, temp in enumerate(temperatures):
-            try:
-                llm.temperature = temp
-                result = llm.query(system=system, user=user, schema=ScreeningResult)
-                paper_results.append(result.relevant)
-            except Exception as e:
-                logger.warning(f"Error on paper {i}, run {run_idx}: {e}")
-                paper_ok = False
-                break
+            paper_ok = True
+            paper_results = []
+            for run_idx, temp in enumerate(temperatures):
+                try:
+                    llm.temperature = temp
+                    result = llm.query(system=system, user=user, schema=ScreeningResult)
+                    paper_results.append(result.relevant)
+                except Exception as e:
+                    logger.warning(f"Error on paper {i}, run {run_idx}: {e}")
+                    paper_ok = False
+                    break
 
-        if paper_ok and len(paper_results) == n_runs:
-            for run_idx, val in enumerate(paper_results):
-                all_runs[run_idx].append(val)
-            completed += 1
+            if paper_ok and len(paper_results) == n_runs:
+                for run_idx, val in enumerate(paper_results):
+                    all_runs[run_idx].append(val)
+                completed += 1
 
-        if (i + 1) % 25 == 0:
-            print(f"  Progress: {i+1}/{len(sample)} (completed: {completed})")
-
-    # Restore original temperature
-    llm.temperature = original_temp
+            if (i + 1) % 25 == 0:
+                print(f"  Progress: {i+1}/{len(sample)} (completed: {completed})")
+    finally:
+        # Always restore original temperature, even on exception
+        llm.temperature = original_temp
 
     if completed == 0:
         return {"n_tested": 0, "pass": False}
