@@ -258,6 +258,38 @@ CLINICAL_CONCEPTS = {
 
 ---
 
+#### ORTHOPEDIC SURGERY (full working example — 31 concepts, ready to run)
+
+A complete Orthopedic Surgery configuration is available in the `configs/` directory:
+- `configs/ortho_config.py` — field identity, geography, scoring
+- `configs/ortho_concepts.py` — 31 clinical concepts with domain groupings
+- `configs/ortho_search.py` — 3-layer Scopus search (13 queries, 5 journal groups)
+- `configs/ortho_filters.py` — exclusion/inclusion keyword lists, journal list
+
+To activate it:
+```bash
+cp configs/ortho_config.py config.py
+cp configs/ortho_concepts.py concept_definitions.py
+# Then update llm_schemas.py CONCEPT_NAMES + ConceptLiteral
+# Then copy search and filter keyword lists from configs/ortho_*.py
+python validate.py
+```
+
+```python
+# Excerpt (6 of 31 concepts):
+CLINICAL_CONCEPTS = {
+    "Total Knee Arthroplasty (TKA)": r"\btka\b|total knee arthroplasty|total knee replacement|unicompartmental knee",
+    "ACL / Knee Ligament":           r"\bacl\b|anterior cruciate|posterior cruciate|\bpcl\b|knee ligament|multiligament",
+    "Spine Surgery / Fusion":        r"spinal fusion|lumbar fusion|cervical fusion|\bacdf\b|\btlif\b|laminectomy",
+    "Rotator Cuff / Shoulder":       r"rotator cuff|supraspinatus|shoulder instability|labral tear|\bbankart\b",
+    "Robotics / Navigation":         r"robotic.*(?:surg|arthroplasty)|robot.assisted|computer.assisted.*navigation",
+    "Fragility Fracture / Osteoporosis": r"fragility fracture|osteoporotic fracture|osteoporosis.*fracture|fracture liaison",
+    # ... 25 more concepts in configs/ortho_concepts.py
+}
+```
+
+---
+
 ### 3d. Domain Groupings
 
 After defining concepts, update `DOMAIN_GROUPS` to match your field's natural clusters.
@@ -272,6 +304,16 @@ DOMAIN_GROUPS = {
     "Vascular": ["Coronary Artery Disease", "Acute MI", "Aortic Disease"],
     "Prevention & Population": ["Hypertension", "Anticoagulation", "Preventive Cardiology"],
     "Technology": ["AI / Machine Learning", "Cardiac Imaging", "Cardiac Rehabilitation"],
+}
+
+# Example for Orthopedic Surgery:
+DOMAIN_GROUPS = {
+    "Arthroplasty & Joint Replacement": ["Total Knee Arthroplasty (TKA)", "Total Hip Arthroplasty (THA)", "Shoulder Arthroplasty", "Revision Arthroplasty"],
+    "Trauma & Fracture": ["Hip / Femur Fracture", "Distal Radius Fracture", "Ankle Fracture", "Pelvic / Acetabular Fracture", "Polytrauma / Ortho Trauma", "Fragility Fracture / Osteoporosis"],
+    "Spine": ["Spine Surgery / Fusion", "Degenerative Disc Disease", "Spinal Deformity (Scoliosis)"],
+    "Sports Medicine": ["ACL / Knee Ligament", "Rotator Cuff / Shoulder", "Meniscus / Cartilage", "Sports Medicine (General)"],
+    "Subspecialties": ["Pediatric Orthopedics", "Hand / Upper Extremity", "Foot / Ankle", "Musculoskeletal Oncology"],
+    "Technology, Quality & Systems": ["AI / Machine Learning", "Robotics / Navigation", "3D Printing / Patient-Specific", "Biologics / PRP / Stem Cells", "Outcomes / PROMs", "Infection / SSI"],
 }
 ```
 

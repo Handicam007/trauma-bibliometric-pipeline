@@ -40,6 +40,13 @@ NEUROSURGERY
   FIELD_SHORT = "Neurosurg"
   JOURNAL_HIGHLIGHT_KEYWORDS = ["neurosurgery", "neurosurgical", "spine", "neuro"]
   WORDCLOUD_STOPWORDS = ["neurosurgery", "brain", "spinal", "surgery", "patient", ...]
+
+ORTHOPEDIC SURGERY  ★ Full working config in configs/ directory
+  FIELD_NAME = "Orthopedic Surgery"
+  FIELD_SHORT = "Ortho"
+  JOURNAL_HIGHLIGHT_KEYWORDS = ["orthop", "bone", "joint", "arthroplasty", "spine"]
+  WORDCLOUD_STOPWORDS = ["orthopedic", "fracture", "surgery", "bone", "joint", "patient", ...]
+  → See configs/ortho_config.py, ortho_concepts.py, ortho_search.py, ortho_filters.py
 ──────────────────────────────────────────────────────────────────────
 
 Current field: Trauma Acute Care Surgery (US + Canada, 2020-2026)
